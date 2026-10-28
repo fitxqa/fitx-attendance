@@ -76,7 +76,8 @@ with sync_playwright() as p:
     pg.screenshot(path=f'{OUT}/07-outside.png')
     pg.click('#exc-btn'); pg.fill('#mf-0', 'Treadmill repair at customer gym'); pg.click('#modal-ok'); time.sleep(0.5)
     reqs = pg.evaluate("[...window.__store.entries()].filter(([k])=>k.startsWith('requests/')).map(([,v])=>v)")
-    check(len(reqs) == 1 and reqs[0]['slot'] == 'amOut' and reqs[0]['dist'] > 200, 'exception request sent for AM out with distance')
+    check(len(reqs) == 1 and reqs[0]['slot'] in ('amOut', 'pmOut') and reqs[0]['dist'] > 200, f"exception request sent ({reqs[0]['slot'] if reqs else '-'}) with distance")
+    req_slot = reqs[0]['slot'] if reqs else 'amOut'
 
     # History
     pg.click('[data-tab=history]'); time.sleep(0.6)
@@ -108,7 +109,7 @@ with sync_playwright() as p:
     pg.screenshot(path=f'{OUT}/10-requests.png')
     pg.click('[data-ok]'); time.sleep(0.6)
     keys = pg.evaluate("[...window.__store.keys()].filter(k=>k.startsWith('punches/fx-014'))")
-    check(any(k.endswith('_amOut') for k in keys), 'approved request became an AM out punch')
+    check(any(k.endswith('_' + req_slot) for k in keys), f'approved request became a {req_slot} punch')
     pg.click('[data-sub=live]'); time.sleep(0.4)
     pg.screenshot(path=f'{OUT}/11-live.png', full_page=True)
     check('Rashid Khan' in pg.inner_text('#a-live'), 'live board lists employee')
@@ -119,7 +120,7 @@ with sync_playwright() as p:
     with pg.expect_download() as dl:
         pg.click('#r-export')
     path = dl.value.path(); csv = open(path, encoding='utf-8-sig').read()
-    check(csv.startswith('Date,Day,Employee ID') and 'FX-014' in csv and 'Rashid Khan' in csv, 'CSV export has the employee row')
+    check(csv.startswith('Date,Day,Employee ID,Name,Morning check-in') and 'FX-014' in csv and 'Rashid Khan' in csv, 'CSV export has the employee row')
     print(csv)
 
     # Password reset → old password stops working

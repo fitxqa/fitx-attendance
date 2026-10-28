@@ -8,8 +8,16 @@ export const now = () => Date.now() + skew;
 const q = (ms) => new Date(ms + QA_MS); // read with getUTC* to get Qatar wall time
 export const pad = (n) => String(n).padStart(2, '0');
 
-// 20261028
-export const dateInt = (ms = now()) => { const d = q(ms); return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate(); };
+// The work day starts at 04:00 Qatar time, so a late return after midnight (e.g. 00:30)
+// still belongs to the same working day. Keep in step with qtime() in firestore.rules.
+export const DAY_START_MIN = 4 * 60;
+const wq = (ms) => q(ms - DAY_START_MIN * 60000);
+// 20261028 = the WORK date
+export const dateInt = (ms = now()) => { const d = wq(ms); return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate(); };
+// minutes since midnight of the work date (00:30 after midnight = 1470)
+export const workMin = (ms = now()) => { const d = wq(ms); return d.getUTCHours() * 60 + d.getUTCMinutes() + DAY_START_MIN; };
+// "HH:MM" schedule → minutes on the work-day clock (times before 04:00 count as after midnight)
+export const schedMin = (s) => { const m = toMin(s); return m < DAY_START_MIN ? m + 1440 : m; };
 // 202610
 export const monthInt = (ms = now()) => Math.floor(dateInt(ms) / 100);
 // minutes since Qatar midnight
@@ -33,4 +41,4 @@ export const daysInMonth = (mi) => new Date(Date.UTC(Math.floor(mi / 100), mi % 
 export const prevMonth = (mi) => (mi % 100 === 1 ? (Math.floor(mi / 100) - 1) * 100 + 12 : mi - 1);
 export const isoDate = (di) => { const { y, m, d } = dParts(di); return `${y}-${pad(m)}-${pad(d)}`; };
 // Qatar wall time (date int + "HH:MM") → epoch ms
-export const qaToMs = (di, hm) => { const { y, m, d } = dParts(di); return Date.UTC(y, m - 1, d) + toMin(hm) * 60000 - QA_MS; };
+export const qaToMs = (di, hm) => { const { y, m, d } = dParts(di); return Date.UTC(y, m - 1, d) + schedMin(hm) * 60000 - QA_MS; };

@@ -76,12 +76,12 @@
       <div class="hello"><div class="d" id="h-date"></div><div class="n" id="h-name"></div><div class="d" id="h-role"></div></div>
       <div class="card zone mx" id="zone-card"></div>
       <div class="punch-wrap">
-        <button class="punch" id="punch-btn"><svg width="34" height="34"><use href="#i-pin"/></svg><span class="big" id="pb-big">Check in</span><span class="small" id="pb-small">Morning shift</span></button>
+        <button class="punch" id="punch-btn"><svg width="34" height="34"><use href="#i-pin"/></svg><span class="big" id="pb-big">Check in</span><span class="small" id="pb-small">Morning check-in</span></button>
         <div class="punch-hint" id="punch-hint"></div>
         <button class="link hidden" id="exc-btn" type="button">On a customer site? Request an exception</button>
       </div>
       <div class="card pad mx">
-        <div class="today-head"><h2 class="sec">Today</h2><div class="muted" style="font-size:12px">Worked <b style="color:#fff" id="worked">0h 0m</b></div></div>
+        <div class="today-head"><h2 class="sec">Today</h2><div class="muted" style="font-size:12px">On duty <b style="color:#fff" id="worked">0h 0m</b></div></div>
         <div class="slots" id="slots"></div>
       </div>
     </div>
@@ -90,7 +90,7 @@
     <div class="page hidden" id="t-history">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 20px 12px"><h1 style="margin:0;font-size:24px">History</h1><select class="month-sel" id="h-month" aria-label="Month"></select></div>
       <div class="stats mx" id="h-stats"></div>
-      <div class="hgrid hhead"><div>Day</div><div>AM in</div><div>AM out</div><div>PM in</div><div>PM out</div></div>
+      <div class="hgrid hhead"><div>Day</div><div>AM in</div><div>To visits</div><div>Night in</div><div>Night out</div></div>
       <div class="mx" id="h-rows" style="display:flex;flex-direction:column;gap:6px"></div>
       <div class="legend"><span><i style="background:var(--green)"></i>On time</span><span><i style="background:var(--amber)"></i>Late / early out</span><span><i style="background:var(--red)"></i>Missed</span><span style="text-decoration:underline dotted">Added by admin</span></div>
     </div>

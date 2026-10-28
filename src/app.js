@@ -33,36 +33,40 @@ $('ver').textContent = `FitX Attendance v${VERSION}`;
 
 // ---------- Punch slots ----------
 const SLOTS = [
-  { id: 'amIn', shift: 'Morning', kind: 'Check-in', short: 'AM in', isIn: true },
-  { id: 'amOut', shift: 'Morning', kind: 'Check-out', short: 'AM out', isIn: false },
-  { id: 'pmIn', shift: 'Evening', kind: 'Check-in', short: 'PM in', isIn: true },
-  { id: 'pmOut', shift: 'Evening', kind: 'Check-out', short: 'PM out', isIn: false },
+  // Straight shift: office in the morning → site visits all day → back to the office at night.
+  { id: 'amIn', shift: 'Morning', kind: 'Check-in', short: 'AM in', isIn: true, label: 'Morning check-in', btn: 'Check in' },
+  { id: 'amOut', shift: 'Morning', kind: 'Out to visits', short: 'AM out', isIn: false, label: 'Leave for site visits', btn: 'Go to visits' },
+  { id: 'pmIn', shift: 'Night', kind: 'Back from visits', short: 'Night in', isIn: true, label: 'Back from visits', btn: 'Back in' },
+  { id: 'pmOut', shift: 'Night', kind: 'Check-out', short: 'Night out', isIn: false, label: 'Night check-out', btn: 'Check out' },
 ];
 const SLOT = Object.fromEntries(SLOTS.map((s) => [s.id, s]));
-const OFFICE_DEFAULT = { name: 'FitX Office', lat: null, lng: null, radius: 100, amIn: '07:30', amOut: '12:30', pmIn: '15:30', pmOut: '20:30', grace: 10 };
+const OFFICE_DEFAULT = { name: 'FitX Office', lat: null, lng: null, radius: 100, amIn: '09:00', amOut: '10:00', pmIn: '22:00', pmOut: '22:15', grace: 15 };
 
 // Which punch comes next, given today's punches {amIn:{...}, ...}
 function nextSlot(p, office) {
+  const nowM = T.workMin(), nightIn = T.schedMin(office.pmIn);
   if (!p.amIn && !p.pmIn) {
-    const mid = (T.toMin(office.amOut) + T.toMin(office.pmIn)) / 2;
-    return T.minOfDay() < mid ? 'amIn' : 'pmIn';
+    const mid = (T.schedMin(office.amOut) + nightIn) / 2;
+    return nowM < mid ? 'amIn' : 'pmIn';
   }
-  if (p.amIn && !p.amOut && !p.pmIn) return 'amOut';
+  // Forgot "leave for visits" in the morning: by night, offer "back from visits" instead.
+  if (p.amIn && !p.amOut && !p.pmIn) return nowM >= nightIn - 120 ? 'pmIn' : 'amOut';
   if (!p.pmIn) return 'pmIn';
   if (!p.pmOut) return 'pmOut';
   return null;
 }
 // 'ok' | 'late' (late in or early out) for a punch time
 function judge(slotId, t, office) {
-  const m = T.minOfDay(t), sched = T.toMin(office[slotId]), g = Number(office.grace) || 0;
+  const m = T.workMin(t), sched = T.schedMin(office[slotId]), g = Number(office.grace) || 0;
   if (SLOT[slotId].isIn) return m > sched + g ? 'late' : 'ok';
   return m < sched - g ? 'late' : 'ok';
 }
+// Duty time = morning check-in to night check-out (site visits in between count as work).
 function workedMin(p, nowMs) {
-  let m = 0;
-  if (p.amIn) m += (p.amOut ? ms(p.amOut.t) : (p.pmIn ? ms(p.amIn.t) : nowMs)) - ms(p.amIn.t);
-  if (p.pmIn) m += (p.pmOut ? ms(p.pmOut.t) : nowMs) - ms(p.pmIn.t);
-  return Math.max(0, m / 60000);
+  const first = p.amIn || p.pmIn;
+  if (!first) return 0;
+  const end = p.pmOut ? ms(p.pmOut.t) : nowMs;
+  return Math.max(0, (end - ms(first.t)) / 60000);
 }
 // Time of the latest punch of a day (used to close an open shift on past days)
 const lastT = (p) => Math.max(0, ...Object.values(p).map((x) => ms(x.t)));
@@ -428,8 +432,8 @@ function renderPunch() {
     hint = 'See you tomorrow';
   } else {
     const s = SLOT[next];
-    $('pb-big').textContent = s.isIn ? 'Check in' : 'Check out';
-    $('pb-small').textContent = `${s.shift} shift`;
+    $('pb-big').textContent = s.btn;
+    $('pb-small').textContent = s.label;
     if (!officeSet) { btn.classList.add('locked'); hint = 'Waiting for the admin to set the office location'; }
     else if (z.s === 'out') {
       btn.classList.add('locked'); $('pb-big').textContent = 'Locked';
@@ -474,7 +478,7 @@ $('punch-btn').addEventListener('click', async () => {
     };
     await withTimeout(setDoc(doc(db, 'punches', punchId(me.id, di, next)), data), 20000, 'timeout');
     if (navigator.vibrate) navigator.vibrate(60);
-    toast(`${s.shift} ${s.kind.toLowerCase()} saved ✓`);
+    toast(`${s.label} saved ✓`);
   } catch (e) {
     const c = String(e.code || '');
     const geo = ['perm', 'off', 'timeout', 'fail'].includes(c) && e.message;
@@ -491,7 +495,7 @@ $('exc-btn').addEventListener('click', async () => {
   const next = nextSlot(today, office);
   if (!next) return;
   const s = SLOT[next];
-  const v = await ask({ title: `Request ${s.shift.toLowerCase()} ${s.kind.toLowerCase()}`,
+  const v = await ask({ title: `Request: ${s.label.toLowerCase()}`,
     text: 'The admin will see your reason and where you are now. If approved, the punch is added with the current time.',
     fields: [{ label: 'Reason (customer / site)', type: 'textarea' }], ok: 'Send request' });
   if (!v) return;
@@ -535,7 +539,7 @@ async function loadHistory() {
       minutes += dayWorked(p, di);
       SLOTS.forEach((s) => { if (p[s.id] && judge(s.id, ms(p[s.id].t), office) === 'late') late++; });
     });
-    $('h-stats').innerHTML = `<div class="stat hot"><div class="v">${Math.round(minutes / 60)}h</div><div class="l">Hours worked</div></div>
+    $('h-stats').innerHTML = `<div class="stat hot"><div class="v">${Math.round(minutes / 60)}h</div><div class="l">Duty hours</div></div>
       <div class="stat"><div class="v">${days.length}</div><div class="l">Days present</div></div>
       <div class="stat"><div class="v" style="color:var(--amber)">${late}</div><div class="l">Late / early</div></div>`;
     $('h-rows').innerHTML = days.length ? days.map((di) => {
@@ -544,7 +548,8 @@ async function loadHistory() {
       const cells = SLOTS.map((s) => {
         const x = p[s.id];
         if (x) return `<div class="tm ${judge(s.id, ms(x.t), office)} ${x.manual ? 'man' : ''}">${T.hhmm(ms(x.t))}</div>`;
-        const missed = past && ((s.id === 'amOut' && p.amIn) || (s.id === 'pmOut' && p.pmIn));
+        const missed = past && p.amIn && (s.id === 'pmIn' || s.id === 'pmOut' || (s.id === 'amOut' && !p.pmIn))
+          || past && s.id === 'pmOut' && p.pmIn;
         return `<div class="tm ${missed ? 'miss' : ''}">${missed ? 'Missed' : '--'}</div>`;
       }).join('');
       return `<div class="hrow hgrid ${di === T.dateInt() ? 'today' : ''}"><div><div class="dd">${di % 100}</div><div class="dw">${T.dowShort(di)}</div></div>${cells}</div>`;
@@ -558,8 +563,8 @@ function renderProfile() {
   $('p-av').textContent = initials(me.name);
   $('p-name').textContent = me.name;
   $('p-id').textContent = `ID ${me.id.toUpperCase()} · ${me.title || (isAdmin() ? 'Admin' : 'Employee')}`;
-  $('p-shifts').innerHTML = `<div class="slot"><div class="s1">Morning</div><div class="s2">${office.amIn} – ${office.amOut}</div></div>
-    <div class="slot"><div class="s1">Evening</div><div class="s2">${office.pmIn} – ${office.pmOut}</div></div>`;
+  $('p-shifts').innerHTML = `<div class="slot"><div class="s1">Morning at office</div><div class="s2">${office.amIn} – ${office.amOut}</div></div>
+    <div class="slot"><div class="s1">Night at office</div><div class="s2">${office.pmIn} – ${office.pmOut}</div></div>`;
   $('p-zone').textContent = officeSet ? `${office.name} · punch within ${office.radius} m · ${office.grace} min grace` : 'Office location not set yet';
 }
 
@@ -609,9 +614,11 @@ function renderAdmin() {
 // ----- Today (live board) -----
 function statusOf(p) {
   if (!p || !Object.keys(p).length) return ['Not punched', 'grey'];
-  if (p.pmOut || (p.amOut && !p.pmIn && T.minOfDay() >= T.toMin(office.pmIn) + 60)) return [p.pmOut ? 'Day done' : 'Left', 'grey'];
-  if ((p.amIn && !p.amOut) || (p.pmIn && !p.pmOut)) return ['In office', 'green'];
-  return ['On break', 'orange'];
+  if (p.pmOut) return ['Day done', 'grey'];
+  if (p.pmIn) return ['In office', 'green'];
+  if (p.amOut) return T.workMin() >= T.schedMin(office.pmIn) + 120 ? ['Not back yet', 'red'] : ['On site visits', 'orange'];
+  if (p.amIn) return ['In office', 'green'];
+  return ['Not punched', 'grey'];
 }
 function renderLive() {
   const active = staff.filter((s) => !s.disabled);
@@ -650,7 +657,7 @@ function renderLive() {
 async function fixPunch(emp) {
   const s = staff.find((x) => x.id === emp); if (!s) return;
   const v = await ask({ title: `Fix punch — ${s.name}`, text: 'Adds or changes today\'s punch (marked as added by admin). Leave the time empty to delete it.',
-    fields: [{ label: 'Punch', type: 'select', value: 'amIn', options: SLOTS.map((x) => [x.id, `${x.shift} ${x.kind.toLowerCase()}`]) },
+    fields: [{ label: 'Punch', type: 'select', value: 'amIn', options: SLOTS.map((x) => [x.id, x.label]) },
       { label: 'Time (Qatar)', type: 'time', required: false }, { label: 'Note', required: false }], ok: 'Save' });
   if (!v) return;
   const [slot, time, note] = v;
@@ -669,7 +676,7 @@ async function fixPunch(emp) {
 function renderRequests() {
   $('a-req').innerHTML = `<div class="card pad mx"><h2 class="sec">Exception requests</h2><div class="list" style="margin-top:6px">${pending.map((r) => `
     <div class="item" style="align-items:flex-start"><div class="av">${esc(initials(r.name))}</div><div class="who">
-      <div class="nm">${esc(r.name)} · ${esc(SLOT[r.slot] ? SLOT[r.slot].shift + ' ' + SLOT[r.slot].kind.toLowerCase() : r.slot)}</div>
+      <div class="nm">${esc(r.name)} · ${esc(SLOT[r.slot] ? SLOT[r.slot].label : r.slot)}</div>
       <div class="rl">${r.t ? T.hhmm(ms(r.t)) + ' · ' + T.dowShort(r.date) + ' ' + (r.date % 100) : ''}${r.dist != null ? ` · ${r.dist} m from office` : ' · location unknown'}</div>
       <div style="margin-top:6px;font-size:14px">${esc(r.note)}</div>
       <div class="actions"><button class="btn small" data-ok="${r.rid}">Approve</button><button class="btn small danger" data-no="${r.rid}">Reject</button>${r.lat != null ? mapLink(r.lat, r.lng) : ''}</div>
@@ -793,8 +800,9 @@ function renderOffice() {
     ${o.lat != null ? mapLink(o.lat, o.lng, 'Check on Google Maps') : ''}
     <div class="range-row"><span>Allowed radius</span><b id="o-rv">${o.radius} m</b></div>
     <input type="range" id="o-rad" min="30" max="500" step="10" value="${o.radius}" aria-label="Allowed radius in metres">
-    <div class="row2"><label class="field">Morning start<input id="o-amIn" type="time" value="${o.amIn}"></label><label class="field">Morning end<input id="o-amOut" type="time" value="${o.amOut}"></label></div>
-    <div class="row2"><label class="field">Evening start<input id="o-pmIn" type="time" value="${o.pmIn}"></label><label class="field">Evening end<input id="o-pmOut" type="time" value="${o.pmOut}"></label></div>
+    <div class="row2"><label class="field">Morning check-in<input id="o-amIn" type="time" value="${o.amIn}"></label><label class="field">Leave for visits<input id="o-amOut" type="time" value="${o.amOut}"></label></div>
+    <div class="row2"><label class="field">Back from visits<input id="o-pmIn" type="time" value="${o.pmIn}"></label><label class="field">Night check-out<input id="o-pmOut" type="time" value="${o.pmOut}"></label></div>
+    <div class="muted" style="font-size:12px;line-height:1.5">The working day runs until 04:00, so a return after midnight still counts for the same day.</div>
     <label class="field">Grace period (minutes before marking late)<input id="o-grace" type="number" min="0" max="60" value="${o.grace}"></label>
     <button class="btn block" id="o-save">Save zone</button>
     <div class="muted" style="font-size:12px;line-height:1.5">Tip: stand in the middle of the office and tap “Use my current location” for the most accurate centre point.</div>
@@ -857,11 +865,11 @@ async function loadReport() {
         di = Number(di);
         minutes += dayWorked(p, di);
         SLOTS.forEach((x) => { if (p[x.id] && judge(x.id, ms(p[x.id].t), office) === 'late') late++; });
-        if (di < T.dateInt() && ((p.amIn && !p.amOut) || (p.pmIn && !p.pmOut))) missed++;
+        if (di < T.dateInt() && !p.pmOut) missed++; // never checked out at night
       });
       return { s, id, days: Object.keys(days).length, minutes, late, missed };
     }).filter((r) => r.days || !r.s.disabled);
-    $('r-table').innerHTML = `<table class="rep"><thead><tr><th>Employee</th><th>Days</th><th>Hours</th><th>Late / early</th><th>Missed out</th></tr></thead><tbody>
+    $('r-table').innerHTML = `<table class="rep"><thead><tr><th>Employee</th><th>Days</th><th>Duty hours</th><th>Late / early</th><th>No night check-out</th></tr></thead><tbody>
       ${rows.map((r) => `<tr><td><b>${esc(r.s.name)}</b><br><span class="muted">${esc(r.id.toUpperCase())}</span></td><td>${r.days}</td><td>${T.fmtDur(r.minutes)}</td><td style="color:${r.late ? 'var(--amber)' : 'inherit'}">${r.late}</td><td style="color:${r.missed ? 'var(--red)' : 'inherit'}">${r.missed}</td></tr>`).join('')}
     </tbody></table>`;
   } catch (e) { $('r-table').innerHTML = `<div class="empty">Could not load (${esc(e.code || e.message)})</div>`; }
@@ -871,7 +879,7 @@ async function exportReport() {
   const m = Number($('r-month').value);
   const per = {};
   reportRows.forEach((p) => { ((per[p.emp] = per[p.emp] || {})[p.date] = per[p.emp][p.date] || {})[p.slot] = p; });
-  const lines = [['Date', 'Day', 'Employee ID', 'Name', 'AM in', 'AM out', 'PM in', 'PM out', 'Hours', 'Late / early', 'Added by admin'].join(',')];
+  const lines = [['Date', 'Day', 'Employee ID', 'Name', 'Morning check-in', 'Leave for visits', 'Back from visits', 'Night check-out', 'Duty hours', 'Late / early', 'Added by admin'].join(',')];
   Object.keys(per).sort().forEach((emp) => {
     const s = staff.find((x) => x.id === emp) || { name: emp };
     Object.keys(per[emp]).map(Number).sort((a, b) => a - b).forEach((di) => {

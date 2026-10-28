@@ -1,8 +1,10 @@
 # FitX Attendance — staff check-in / check-out with a GPS office zone
 
-Attendance app for FitX Sports Equipment Services staff. Employees punch **four times a day** on their own phone —
-morning check-in, morning check-out, evening check-in, evening check-out — and a punch only works **within 100 m of the
-office** (the admin can change the radius). Runs on the **free Firebase Spark plan** (no billing, no card).
+Attendance app for FitX Sports Equipment Services staff, set up for a **straight shift**: technicians punch **four times
+a day** on their own phone — **morning check-in** (09:00), **leave for site visits** (~10:00), **back from visits** (~22:00)
+and **night check-out** — and a punch only works **within 100 m of the office** (the admin can change the radius and the
+times). Duty hours run from morning check-in to night check-out. The working day ends at 04:00, so a return after
+midnight still counts for the same day. Runs on the **free Firebase Spark plan** (no billing, no card).
 
 This is a **completely separate project** from FitX Call: its own Firebase project, its own app ID
 (`qa.fitx.attendance`), its own logins and its own signing key.

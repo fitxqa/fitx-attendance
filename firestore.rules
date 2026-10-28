@@ -19,7 +19,9 @@ service cloud.firestore {
     function bootstrapping() { return signedIn() && !exists(setupPath()) && existsAfter(setupPath()); }
 
     // ---------- Qatar date (UTC+3, no daylight saving) from the SERVER clock ----------
-    function qtime() { return request.time + duration.value(3, 'h'); }
+    // Work day = Qatar time (UTC+3) shifted back 4 h, so returns after midnight count for the
+    // same day. Keep in step with DAY_START_MIN in src/time.js.
+    function qtime() { return request.time - duration.value(1, 'h'); }
     function qdate() { return qtime().year() * 10000 + qtime().month() * 100 + qtime().day(); }
     function qmonth() { return qtime().year() * 100 + qtime().month(); }
 
@@ -32,11 +34,11 @@ service cloud.firestore {
            + (d.lng - o.lng) * o.k * 111320 * (d.lng - o.lng) * o.k * 111320
            <= (o.radius + 5) * (o.radius + 5);
     }
-    // Punch order: AM in → AM out → PM in → PM out (a day may also start with PM in).
+    // Punch order: morning in → leave for visits → back from visits → night out.
     function orderOk(d) {
       return d.slot == 'amIn'  ? !punchExists(d.emp, d.date, 'pmIn')
-           : d.slot == 'amOut' ? punchExists(d.emp, d.date, 'amIn')
-           : d.slot == 'pmIn'  ? (!punchExists(d.emp, d.date, 'amIn') || punchExists(d.emp, d.date, 'amOut'))
+           : d.slot == 'amOut' ? (punchExists(d.emp, d.date, 'amIn') && !punchExists(d.emp, d.date, 'pmIn'))
+           : d.slot == 'pmIn'  ? true   // allowed even if "leave for visits" was forgotten
            : punchExists(d.emp, d.date, 'pmIn');
     }
     function slotOk(s) { return s in ['amIn', 'amOut', 'pmIn', 'pmOut']; }

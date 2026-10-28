@@ -1,0 +1,7 @@
+node_modules/
+www/app.js
+tests/www/
+.firebase/
+*.log
+*.keystore
+FitX-Attendance-Secret.txt

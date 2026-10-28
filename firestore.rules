@@ -1,0 +1,135 @@
+rules_version = '2';
+// FitX Attendance — security rules (own Firebase project, separate from FitX Call).
+// Every punch is re-checked here, so a modified app can't cheat the time, date, phone or zone.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- who is asking ----------
+    function signedIn() { return request.auth != null; }
+    function accPath() { return /databases/$(database)/documents/accounts/$(request.auth.uid); }
+    function staffPath(e) { return /databases/$(database)/documents/staff/$(e); }
+    function myEmp() { return get(accPath()).data.emp; }
+    function meDoc() { return get(staffPath(myEmp())).data; }
+    // A login is active only while it is the employee's CURRENT login and the employee is not disabled.
+    function active() { return signedIn() && exists(accPath()) && meDoc().uid == request.auth.uid && meDoc().disabled != true; }
+    function isAdmin() { return active() && meDoc().role == 'admin'; }
+
+    // First-time setup: the very first person may make themselves admin, once.
+    function setupPath() { return /databases/$(database)/documents/config/setup; }
+    function bootstrapping() { return signedIn() && !exists(setupPath()) && existsAfter(setupPath()); }
+
+    // ---------- Qatar date (UTC+3, no daylight saving) from the SERVER clock ----------
+    function qtime() { return request.time + duration.value(3, 'h'); }
+    function qdate() { return qtime().year() * 10000 + qtime().month() * 100 + qtime().day(); }
+    function qmonth() { return qtime().year() * 100 + qtime().month(); }
+
+    function office() { return get(/databases/$(database)/documents/config/office).data; }
+    function punchExists(e, d, s) { return exists(/databases/$(database)/documents/punches/$(e + '_' + string(d) + '_' + s)); }
+
+    // Inside the office circle? Flat-earth distance; k = cos(office latitude), saved by the admin app.
+    function inZone(d, o) {
+      return (d.lat - o.lat) * 111320 * (d.lat - o.lat) * 111320
+           + (d.lng - o.lng) * o.k * 111320 * (d.lng - o.lng) * o.k * 111320
+           <= (o.radius + 5) * (o.radius + 5);
+    }
+    // Punch order: AM in → AM out → PM in → PM out (a day may also start with PM in).
+    function orderOk(d) {
+      return d.slot == 'amIn'  ? !punchExists(d.emp, d.date, 'pmIn')
+           : d.slot == 'amOut' ? punchExists(d.emp, d.date, 'amIn')
+           : d.slot == 'pmIn'  ? (!punchExists(d.emp, d.date, 'amIn') || punchExists(d.emp, d.date, 'amOut'))
+           : punchExists(d.emp, d.date, 'pmIn');
+    }
+    function slotOk(s) { return s in ['amIn', 'amOut', 'pmIn', 'pmOut']; }
+
+    // ---------- setup & settings ----------
+    match /config/setup {
+      allow read: if true;
+      allow create: if bootstrapping()
+        && getAfter(staffPath(getAfter(accPath()).data.emp)).data.role == 'admin'
+        && getAfter(staffPath(getAfter(accPath()).data.emp)).data.uid == request.auth.uid;
+    }
+    match /config/office {
+      allow read: if active();
+      allow write: if isAdmin()
+        && request.resource.data.lat is number && request.resource.data.lng is number
+        && request.resource.data.k is number
+        && request.resource.data.radius is number && request.resource.data.radius >= 20 && request.resource.data.radius <= 1000;
+    }
+
+    // ---------- accounts ----------
+    // Employee ID -> hidden login email (read one at a time before sign-in; never listed).
+    match /logins/{id} {
+      allow get: if true;
+      allow list: if false;
+      allow write: if isAdmin() || bootstrapping();
+    }
+    // Firebase login uid -> Employee ID
+    match /accounts/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin() || (bootstrapping() && uid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+    // Employees. Admins manage them; an employee may only register their phone once (after an admin reset).
+    match /staff/{emp} {
+      allow get: if (signedIn() && exists(accPath()) && myEmp() == emp) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        || (bootstrapping() && emp == getAfter(accPath()).data.emp
+            && request.resource.data.role == 'admin' && request.resource.data.uid == request.auth.uid);
+      allow update: if isAdmin()
+        || (active() && emp == myEmp()
+            && resource.data.device == null && request.resource.data.device is string
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['device', 'deviceName']));
+      allow delete: if false; // disable instead, so history is kept
+    }
+
+    // ---------- punches ----------
+    // id = <employeeId>_<yyyymmdd>_<slot>  →  only one of each punch per day.
+    match /punches/{pid} {
+      allow read: if isAdmin() || (active() && resource.data.emp == myEmp());
+
+      // Employee punch from the phone
+      allow create: if active()
+        && request.resource.data.keys().hasOnly(['emp', 'name', 'slot', 'date', 'month', 't', 'lat', 'lng', 'acc', 'dist', 'device', 'manual'])
+        && request.resource.data.manual == false
+        && request.resource.data.emp == myEmp()
+        && slotOk(request.resource.data.slot)
+        && request.resource.data.date == qdate()
+        && request.resource.data.month == qmonth()
+        && pid == myEmp() + '_' + string(qdate()) + '_' + request.resource.data.slot
+        && request.resource.data.t == request.time
+        && request.resource.data.lat is number && request.resource.data.lng is number
+        && request.resource.data.device == meDoc().device
+        && inZone(request.resource.data, office())
+        && orderOk(request.resource.data);
+
+      // Admin corrections / approved exception requests
+      allow create, update: if isAdmin()
+        && request.resource.data.manual == true
+        && slotOk(request.resource.data.slot)
+        && request.resource.data.t is timestamp
+        && pid == request.resource.data.emp + '_' + string(request.resource.data.date) + '_' + request.resource.data.slot;
+      allow delete: if isAdmin();
+    }
+
+    // ---------- exception requests (outside the zone, e.g. at a customer's gym) ----------
+    match /requests/{rid} {
+      allow read: if isAdmin() || (active() && resource.data.emp == myEmp());
+      allow create: if active()
+        && request.resource.data.emp == myEmp()
+        && request.resource.data.status == 'pending'
+        && slotOk(request.resource.data.slot)
+        && request.resource.data.date == qdate()
+        && request.resource.data.t == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    // ---------- server clock check (one tiny doc per login) ----------
+    match /clock/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['t']) && request.resource.data.t == request.time;
+    }
+  }
+}

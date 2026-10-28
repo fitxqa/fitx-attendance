@@ -1,0 +1,81 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install
+        run: npm ci
+
+      - name: Firebase settings (from secret FITX_ATT_FIREBASE)
+        env:
+          FITX_ATT_FIREBASE: ${{ secrets.FITX_ATT_FIREBASE }}
+        run: node tools/write-config.mjs
+
+      - name: Signing key (from secret FITX_ATT_KEY)
+        env:
+          ALL: ${{ secrets.FITX_ATT_KEY }}
+        run: |
+          # Accept the long line alone or the whole pasted file: pick the longest base64 line.
+          C=$(printf '%s\n' "$ALL" | tr -d ' \r\t' | grep -oE '[A-Za-z0-9+/]{1000,}={0,2}' | awk '{ if (length($0) > length(m)) m=$0 } END { print m }')
+          if [ -z "$C" ]; then echo "::error::Add the FITX_ATT_KEY secret (Settings → Secrets and variables → Actions), then re-run."; exit 1; fi
+          if ! J=$(printf '%s' "$C" | base64 -d 2>/dev/null) || ! printf '%s' "$J" | jq -e . >/dev/null 2>&1; then
+            echo "::error::FITX_ATT_KEY was not copied completely (${#C} characters). Delete it and paste the whole long line again."; exit 1; fi
+          KP=$(printf '%s' "$J" | jq -r .keystorePassword); echo "::add-mask::$KP"
+          printf '%s' "$J" | jq -r .keystoreB64 | base64 -d > "$RUNNER_TEMP/fitx-attendance.keystore"
+          echo "FITX_KEYSTORE=$RUNNER_TEMP/fitx-attendance.keystore" >> "$GITHUB_ENV"
+          echo "FITX_KEYSTORE_PASSWORD=$KP" >> "$GITHUB_ENV"
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build signed APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          if ! ./gradlew assembleRelease --no-daemon 2>&1 | tee build.log; then
+            grep -E "error:|What went wrong|e: |FAILURE|Could not|> " -A3 build.log | grep -v "^\s*at " | head -40 \
+              | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          fi
+
+      - name: Rename
+        run: cp android/app/build/outputs/apk/release/app-release.apk FitX-Attendance.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FitX-Attendance-apk
+          path: FitX-Attendance.apk
+
+      - name: Publish release (download link for phones)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: FitX Attendance 1.0.${{ github.run_number }}
+          body: Download **FitX-Attendance.apk** on the phone and install it. Newer versions install over older ones.
+          files: FitX-Attendance.apk
+          make_latest: true

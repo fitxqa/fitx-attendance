@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0b0b0b">
+  <title>FitX Attendance</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-pin" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a7 7 0 0 1 7 7c0 5-7 13-7 13S5 14 5 9a7 7 0 0 1 7-7z"/><circle cx="12" cy="9" r="2.5"/></g></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></g></symbol>
+    <symbol id="i-cal" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M8 2v4M16 2v4M3 10h18"/></g></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></g></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z"/><path d="m9 12 2 2 4-4"/></g></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></g></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <!-- Loading -->
+  <section id="s-loading" class="screen"><div class="center"><div class="logo" style="font-size:54px">Fit<b>X</b></div><div class="spinner"></div><div class="muted" id="load-msg">Starting…</div></div></section>
+
+  <!-- Firebase not configured yet -->
+  <section id="s-noconfig" class="screen hidden"><div class="center">
+    <div class="logo" style="font-size:54px">Fit<b>X</b></div>
+    <h2 style="margin:0">Setup needed</h2>
+    <p class="muted" style="max-width:320px;line-height:1.5">This app is not connected to its Firebase project yet. Add the <b>FITX_ATT_FIREBASE</b> secret in GitHub and build again (see README).</p>
+  </div></section>
+
+  <!-- Login -->
+  <section id="s-login" class="screen hidden">
+    <div class="login">
+      <svg class="rings" viewBox="0 0 400 400" aria-hidden="true"><circle cx="200" cy="200" r="198" fill="none" stroke="#1c1c1c"/><circle cx="200" cy="200" r="140" fill="none" stroke="#1f1f1f"/><circle cx="200" cy="200" r="80" fill="none" stroke="#3a2210" stroke-width="1.5" stroke-dasharray="5 6"/><circle cx="200" cy="200" r="9" fill="#ff6b00"/></svg>
+      <div style="position:relative"><div class="logo">Fit<b>X</b></div><div class="tag" style="margin-top:6px">Sports Equipment Services</div></div>
+      <div style="position:relative"><h1>Staff attendance</h1><p>Punch in and out at the office. Your location is checked only when you punch.</p></div>
+      <form id="login-form" autocomplete="on">
+        <label class="field">Employee ID<input id="login-user" autocapitalize="none" autocomplete="username" required></label>
+        <label class="field">Password<input id="login-pass" type="password" autocomplete="current-password" required></label>
+        <div class="err" id="login-err" role="alert"></div>
+        <button class="btn block" type="submit">Sign in</button>
+      </form>
+      <div style="flex:1;min-height:20px"></div>
+      <div class="note" style="position:relative"><svg width="18" height="18"><use href="#i-lock"/></svg><div>Your account works on one phone only. Ask the admin to reset it if you change phones.</div></div>
+      <button class="link" id="setup-btn" type="button" style="margin-top:8px">First-time setup (create admin)</button>
+    </div>
+  </section>
+
+  <!-- First admin -->
+  <section id="s-setup" class="screen hidden">
+    <div class="login" style="padding-top:calc(var(--safe-top) + 60px)">
+      <div class="logo" style="font-size:44px">Fit<b>X</b></div>
+      <h1 style="margin-top:22px">First-time setup</h1>
+      <p>Create the admin account. Do this once; after that the admin adds every employee from the Admin tab.</p>
+      <form id="setup-form">
+        <label class="field">Your name<input id="su-name" required></label>
+        <label class="field">Employee ID (used to sign in)<input id="su-user" autocapitalize="none" placeholder="e.g. admin" required></label>
+        <label class="field">Password (6+ characters)<input id="su-pass" type="password" minlength="6" required></label>
+        <div class="err" id="su-err" role="alert"></div>
+        <button class="btn block" type="submit">Create admin</button>
+        <button class="btn ghost block" type="button" id="su-back">Back to sign in</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Main app -->
+  <section id="s-main" class="screen hidden">
+    <header class="top">
+      <div><div class="logo">Fit<b>X</b></div><div class="tag" style="margin-top:3px">Attendance</div></div>
+      <button class="icon-btn" id="refresh-btn" aria-label="Refresh location"><svg width="20" height="20"><use href="#i-refresh"/></svg></button>
+    </header>
+
+    <!-- Punch -->
+    <div class="page" id="t-punch">
+      <div class="hello"><div class="d" id="h-date"></div><div class="n" id="h-name"></div><div class="d" id="h-role"></div></div>
+      <div class="card zone mx" id="zone-card"></div>
+      <div class="punch-wrap">
+        <button class="punch" id="punch-btn"><svg width="34" height="34"><use href="#i-pin"/></svg><span class="big" id="pb-big">Check in</span><span class="small" id="pb-small">Morning shift</span></button>
+        <div class="punch-hint" id="punch-hint"></div>
+        <button class="link hidden" id="exc-btn" type="button">On a customer site? Request an exception</button>
+      </div>
+      <div class="card pad mx">
+        <div class="today-head"><h2 class="sec">Today</h2><div class="muted" style="font-size:12px">Worked <b style="color:#fff" id="worked">0h 0m</b></div></div>
+        <div class="slots" id="slots"></div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="page hidden" id="t-history">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 20px 12px"><h1 style="margin:0;font-size:24px">History</h1><select class="month-sel" id="h-month" aria-label="Month"></select></div>
+      <div class="stats mx" id="h-stats"></div>
+      <div class="hgrid hhead"><div>Day</div><div>AM in</div><div>AM out</div><div>PM in</div><div>PM out</div></div>
+      <div class="mx" id="h-rows" style="display:flex;flex-direction:column;gap:6px"></div>
+      <div class="legend"><span><i style="background:var(--green)"></i>On time</span><span><i style="background:var(--amber)"></i>Late / early out</span><span><i style="background:var(--red)"></i>Missed</span><span style="text-decoration:underline dotted">Added by admin</span></div>
+    </div>
+
+    <!-- Admin -->
+    <div class="page hidden" id="t-admin">
+      <div style="padding:4px 20px 8px"><h1 style="margin:0;font-size:24px">Admin</h1></div>
+      <div class="subtabs" role="tablist">
+        <button data-sub="live" class="on">Today</button>
+        <button data-sub="req">Requests <span id="req-count"></span></button>
+        <button data-sub="staff">Employees</button>
+        <button data-sub="office">Office zone</button>
+        <button data-sub="report">Monthly report</button>
+      </div>
+      <div id="a-live"></div>
+      <div id="a-req" class="hidden"></div>
+      <div id="a-staff" class="hidden"></div>
+      <div id="a-office" class="hidden"></div>
+      <div id="a-report" class="hidden"></div>
+    </div>
+
+    <!-- Profile -->
+    <div class="page hidden" id="t-profile">
+      <div style="padding:4px 20px 12px"><h1 style="margin:0;font-size:24px">Profile</h1></div>
+      <div class="card pad mx" style="display:flex;gap:14px;align-items:center">
+        <div class="av" id="p-av" style="width:56px;height:56px;font-size:18px;background:var(--orange);color:#0b0b0b"></div>
+        <div><div style="font-size:18px;font-weight:700" id="p-name"></div><div class="muted" style="font-size:13px" id="p-id"></div></div>
+      </div>
+      <div class="card pad mx" style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+        <h2 class="sec">My shifts</h2>
+        <div class="row2" id="p-shifts"></div>
+        <div class="muted" style="font-size:12px" id="p-zone"></div>
+      </div>
+      <div class="mx" style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
+        <button class="btn ghost block" id="change-pass">Change my password</button>
+        <button class="btn ghost block" id="logout" style="color:var(--red)">Sign out</button>
+        <div class="muted" style="text-align:center;font-size:12px" id="ver"></div>
+      </div>
+    </div>
+
+    <nav class="tabbar" aria-label="Main">
+      <button data-tab="punch" class="on"><svg width="22" height="22"><use href="#i-clock"/></svg>Punch</button>
+      <button data-tab="history"><svg width="22" height="22"><use href="#i-cal"/></svg>History</button>
+      <button data-tab="admin" class="hidden" id="tab-admin"><svg width="22" height="22"><use href="#i-shield"/></svg>Admin<span class="dot hidden" id="admin-dot"></span></button>
+      <button data-tab="profile"><svg width="22" height="22"><use href="#i-user"/></svg>Profile</button>
+    </nav>
+  </section>
+
+  <!-- Modal -->
+  <div class="modal hidden" id="modal"><form id="modal-form">
+    <h3 id="modal-title"></h3><p id="modal-text"></p><div id="modal-fields" style="display:flex;flex-direction:column;gap:12px"></div>
+    <div class="btns"><button type="button" class="btn ghost" id="modal-cancel">Cancel</button><button type="submit" class="btn" id="modal-ok" style="font-size:18px">OK</button></div>
+  </form></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

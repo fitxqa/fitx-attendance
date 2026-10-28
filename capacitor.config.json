@@ -1,0 +1,8 @@
+{
+  "appId": "qa.fitx.attendance",
+  "appName": "FitX Attendance",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#0b0b0b"
+  }
+}

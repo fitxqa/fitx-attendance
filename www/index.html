@@ -92,7 +92,7 @@
       <div class="stats mx" id="h-stats"></div>
       <div class="hgrid hhead"><div>Day</div><div>AM in</div><div>To visits</div><div>Night in</div><div>Night out</div></div>
       <div class="mx" id="h-rows" style="display:flex;flex-direction:column;gap:6px"></div>
-      <div class="legend"><span><i style="background:var(--green)"></i>On time</span><span><i style="background:var(--amber)"></i>Late / early out</span><span><i style="background:var(--red)"></i>Missed</span><span style="text-decoration:underline dotted">Added by admin</span></div>
+      <div class="legend"><span><i style="background:var(--green)"></i>On time</span><span><i style="background:var(--amber)"></i>Late / early out</span><span><i style="background:var(--red)"></i>Missed</span><span style="text-decoration:underline dotted">Added by admin</span><span style="font-style:italic">Italic = left office (auto)</span></div>
     </div>
 
     <!-- Admin -->
@@ -123,6 +123,11 @@
         <h2 class="sec">My shifts</h2>
         <div class="row2" id="p-shifts"></div>
         <div class="muted" style="font-size:12px" id="p-zone"></div>
+      </div>
+      <div class="card pad mx hidden" id="p-battery" style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h2 class="sec">Leave detection</h2><span id="p-batt-state"></span></div>
+        <div class="muted" style="font-size:13px;line-height:1.5">While you are checked in, the app notices when you leave the office and saves it for you. Allow it to run without battery limits so the phone doesn't stop it.</div>
+        <button class="btn line" id="p-batt-btn" type="button">Remove battery limits</button>
       </div>
       <div class="mx" style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
         <button class="btn ghost block" id="change-pass">Change my password</button>

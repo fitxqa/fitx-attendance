@@ -16,7 +16,7 @@ import { App } from '@capacitor/app';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import * as T from './time.js';
-import { distance, flatDistance, angle, getFix, mockCheck, startWatch, stopWatch } from './geo.js';
+import { distance, flatDistance, angle, getFix, mockCheck, startWatch, stopWatch, officeWatch, officeStop, batteryState, openBattery } from './geo.js';
 
 const VERSION = '1.0';
 const CFG = window.FITX_CONFIG || {};
@@ -40,7 +40,7 @@ const SLOTS = [
   { id: 'pmOut', shift: 'Night', kind: 'Check-out', short: 'Night out', isIn: false, label: 'Night check-out', btn: 'Check out' },
 ];
 const SLOT = Object.fromEntries(SLOTS.map((s) => [s.id, s]));
-const OFFICE_DEFAULT = { name: 'FitX Office', lat: null, lng: null, radius: 100, amIn: '09:00', amOut: '10:00', pmIn: '22:00', pmOut: '22:15', grace: 15 };
+const OFFICE_DEFAULT = { name: 'FitX Office', lat: null, lng: null, radius: 100, away: 10, amIn: '09:00', amOut: '10:00', pmIn: '22:00', pmOut: '22:15', grace: 15 };
 
 // Which punch comes next, given today's punches {amIn:{...}, ...}
 function nextSlot(p, office) {
@@ -221,6 +221,7 @@ async function createAdminProfile(uid, id, name, email) {
 
 $('logout').addEventListener('click', async () => {
   if (!(await confirmBox('Sign out?', 'You will need your Employee ID and password to sign in again.', 'Sign out'))) return;
+  await officeStop();
   await signOut(auth);
 });
 $('change-pass').addEventListener('click', async () => {
@@ -295,6 +296,7 @@ function signedOut() {
     .catch(() => $('setup-btn').classList.remove('hidden'));
 }
 function stopAll() {
+  watchKey = null;
   unsubs.forEach((f) => { try { f(); } catch (e) {} }); unsubs = [];
   stopWatch(); clearInterval(ticker); ticker = null;
 }
@@ -323,7 +325,7 @@ function startApp() {
   unsubs.push(onSnapshot(doc(db, 'config', 'office'), (s) => {
     officeSet = s.exists() && typeof s.data().lat === 'number';
     office = { ...OFFICE_DEFAULT, ...(s.exists() ? s.data() : {}) };
-    renderPunch(); renderProfile();
+    renderPunch(); renderProfile(); syncOfficeWatch();
     if (isAdmin()) renderOffice();
   }, () => {}));
   watchToday();
@@ -342,9 +344,36 @@ function watchToday() {
   const q = query(collection(db, 'punches'), where('emp', '==', me.id), where('date', '==', todayDate));
   todayUnsub = onSnapshot(q, (snap) => {
     today = {}; snap.forEach((d) => { today[d.data().slot] = d.data(); });
-    renderPunch();
+    renderPunch(); syncOfficeWatch();
   }, (e) => console.warn('today', e));
   unsubs.push(() => todayUnsub && todayUnsub());
+}
+
+// ---------- Office watch: notice when a checked-in technician walks out of the zone ----------
+// While someone is checked in (morning, or back at night) the phone keeps checking the zone in
+// the background. Outside for `office.away` minutes → the matching check-out is saved with the
+// time they walked out (marked "auto"), and the watch stops.
+let watchKey = null;
+function watchPlan() {
+  if (!me || !officeSet || !auth.currentUser || (me.device && me.device !== DEVICE)) return null;
+  if (today.amIn && !today.amOut && !today.pmIn) return 'amOut';
+  if (today.pmIn && !today.pmOut) return 'pmOut';
+  return null;
+}
+async function syncOfficeWatch() {
+  if (!native) return;
+  const slot = watchPlan();
+  const key = slot ? [todayDate, slot, office.lat, office.lng, office.radius, office.away].join('|') : 'off';
+  if (key === watchKey) return;
+  watchKey = key;
+  if (!slot) { officeStop(); return; }
+  const ok = await officeWatch({
+    emp: me.id, name: me.name, slot, label: SLOT[slot].label, date: todayDate, device: DEVICE,
+    lat: office.lat, lng: office.lng, radius: office.radius, awayMin: Number(office.away) || 10, officeName: office.name,
+    apiKey: CFG.firebase.apiKey, projectId: CFG.firebase.projectId, refreshToken: auth.currentUser.refreshToken,
+    skew: Math.round(T.getSkew()), until: T.qaToMs(todayDate, '03:59'),
+  });
+  if (!ok) watchKey = null; // try again next time
 }
 
 // ---------- Tabs ----------
@@ -435,7 +464,10 @@ function renderPunch() {
     $('pb-big').textContent = s.btn;
     $('pb-small').textContent = s.label;
     if (!officeSet) { btn.classList.add('locked'); hint = 'Waiting for the admin to set the office location'; }
-    else if (z.s === 'out') {
+    else if (z.s === 'out' && !s.isIn && native) {
+      btn.classList.add('locked'); $('pb-big').textContent = 'Left office';
+      hint = `You are outside the office. Your “${esc(s.label.toLowerCase())}” is saved automatically after ${Number(office.away) || 10} minutes away.`;
+    } else if (z.s === 'out') {
       btn.classList.add('locked'); $('pb-big').textContent = 'Locked';
       hint = `Move ${Math.ceil(z.d - office.radius)} m closer to ${esc(office.name)}. The button unlocks by itself inside the zone.`;
       $('exc-btn').classList.remove('hidden');
@@ -448,7 +480,7 @@ function renderPunch() {
   $('slots').innerHTML = SLOTS.map((s) => {
     const p = today[s.id];
     const cls = p ? judge(s.id, ms(p.t), office) : s.id === next ? 'due' : '';
-    const time = p ? T.hhmm(ms(p.t)) + (p.manual ? '*' : '') : 'Due ' + office[s.id];
+    const time = p ? T.hhmm(ms(p.t)) + (p.manual ? '*' : p.auto ? ' auto' : '') : 'Due ' + office[s.id];
     return `<div class="slot ${s.id === next && !lockedPhone ? 'next' : ''}"><div class="s1">${s.shift}</div><div class="s2">${s.kind}</div><div class="t ${cls}">${esc(time)}</div></div>`;
   }).join('');
   $('worked').textContent = T.fmtDur(workedMin(today, nowMs));
@@ -479,6 +511,7 @@ $('punch-btn').addEventListener('click', async () => {
     await withTimeout(setDoc(doc(db, 'punches', punchId(me.id, di, next)), data), 20000, 'timeout');
     if (navigator.vibrate) navigator.vibrate(60);
     toast(`${s.label} saved ✓`);
+    if (!s.isIn) officeStop();
   } catch (e) {
     const c = String(e.code || '');
     const geo = ['perm', 'off', 'timeout', 'fail'].includes(c) && e.message;
@@ -547,7 +580,7 @@ async function loadHistory() {
       const past = di < T.dateInt();
       const cells = SLOTS.map((s) => {
         const x = p[s.id];
-        if (x) return `<div class="tm ${judge(s.id, ms(x.t), office)} ${x.manual ? 'man' : ''}">${T.hhmm(ms(x.t))}</div>`;
+        if (x) return `<div class="tm ${judge(s.id, ms(x.t), office)} ${x.manual ? 'man' : ''} ${x.auto ? 'auto' : ''}">${T.hhmm(ms(x.t))}</div>`;
         const missed = past && p.amIn && (s.id === 'pmIn' || s.id === 'pmOut' || (s.id === 'amOut' && !p.pmIn))
           || past && s.id === 'pmOut' && p.pmIn;
         return `<div class="tm ${missed ? 'miss' : ''}">${missed ? 'Missed' : '--'}</div>`;
@@ -565,8 +598,21 @@ function renderProfile() {
   $('p-id').textContent = `ID ${me.id.toUpperCase()} · ${me.title || (isAdmin() ? 'Admin' : 'Employee')}`;
   $('p-shifts').innerHTML = `<div class="slot"><div class="s1">Morning at office</div><div class="s2">${office.amIn} – ${office.amOut}</div></div>
     <div class="slot"><div class="s1">Night at office</div><div class="s2">${office.pmIn} – ${office.pmOut}</div></div>`;
-  $('p-zone').textContent = officeSet ? `${office.name} · punch within ${office.radius} m · ${office.grace} min grace` : 'Office location not set yet';
+  $('p-zone').textContent = officeSet ? `${office.name} · punch within ${office.radius} m · ${office.grace} min grace · leave saved after ${office.away ?? 10} min away` : 'Office location not set yet';
+  renderBattery();
 }
+
+// Phones like Xiaomi / Oppo / Huawei stop background apps unless battery limits are removed.
+async function renderBattery() {
+  if (!native) { $('p-battery').classList.add('hidden'); return; }
+  const b = await batteryState();
+  $('p-battery').classList.remove('hidden');
+  $('p-batt-state').innerHTML = b.unrestricted
+    ? '<span class="pill green"><i></i>Ready</span>'
+    : '<span class="pill red"><i></i>Battery limits ON</span>';
+  $('p-batt-btn').classList.toggle('hidden', !!b.unrestricted);
+}
+$('p-batt-btn').addEventListener('click', () => openBattery());
 
 // =====================================================================
 //  ADMIN
@@ -646,8 +692,8 @@ function renderLive() {
         return `<div class="item" style="align-items:flex-start">
           <div class="av">${esc(initials(s.name))}</div>
           <div class="who"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div class="nm">${esc(s.name)}</div><span class="pill ${col}"><i></i>${st}</span></div>
-            <div class="rl">${esc(s.title || '')}${last && last.dist != null ? ` · ${last.manual ? 'added by admin' : last.dist + ' m from office'}` : ''}</div>
-            <div class="times">${SLOTS.map((x) => { const q = p[x.id]; return `<div><small>${x.short}</small><span class="tm ${q ? judge(x.id, ms(q.t), office) : ''}">${q ? T.hhmm(ms(q.t)) + (q.manual ? '*' : '') : '--'}</span></div>`; }).join('')}</div>
+            <div class="rl">${esc(s.title || '')}${last && last.dist != null ? ` · ${last.manual ? 'added by admin' : last.auto ? `left the office at ${T.hhmm(ms(last.t))} (auto-detected)` : last.dist + ' m from office'}` : ''}</div>
+            <div class="times">${SLOTS.map((x) => { const q = p[x.id]; return `<div><small>${x.short}</small><span class="tm ${q ? judge(x.id, ms(q.t), office) : ''} ${q && q.auto ? 'auto' : ''}">${q ? T.hhmm(ms(q.t)) + (q.manual ? '*' : '') : '--'}</span></div>`; }).join('')}</div>
             <div class="actions"><button class="btn small ghost" data-fix="${esc(s.id)}">Fix punch</button>${last && last.lat != null ? mapLink(last.lat, last.lng) : ''}</div>
           </div></div>`;
       }).join('') || '<div class="empty">No employees yet — add them in Employees</div>'}</div>
@@ -804,6 +850,8 @@ function renderOffice() {
     <div class="row2"><label class="field">Back from visits<input id="o-pmIn" type="time" value="${o.pmIn}"></label><label class="field">Night check-out<input id="o-pmOut" type="time" value="${o.pmOut}"></label></div>
     <div class="muted" style="font-size:12px;line-height:1.5">The working day runs until 04:00, so a return after midnight still counts for the same day.</div>
     <label class="field">Grace period (minutes before marking late)<input id="o-grace" type="number" min="0" max="60" value="${o.grace}"></label>
+    <label class="field">Count as left after (minutes outside the zone)<input id="o-away" type="number" min="3" max="60" value="${o.away ?? 10}"></label>
+    <div class="muted" style="font-size:12px;line-height:1.5">While a technician is checked in, the phone notices when they walk out. After this many minutes outside, “Leave for site visits” (or the night check-out) is saved with the time they left.</div>
     <button class="btn block" id="o-save">Save zone</button>
     <div class="muted" style="font-size:12px;line-height:1.5">Tip: stand in the middle of the office and tap “Use my current location” for the most accurate centre point.</div>
   </div>`;
@@ -811,6 +859,7 @@ function renderOffice() {
     name: $('o-name').value.trim() || 'FitX Office', lat: parseFloat($('o-lat').value), lng: parseFloat($('o-lng').value),
     radius: Number($('o-rad').value), amIn: $('o-amIn').value, amOut: $('o-amOut').value, pmIn: $('o-pmIn').value, pmOut: $('o-pmOut').value,
     grace: Math.max(0, Math.min(60, Number($('o-grace').value) || 0)),
+    away: Math.max(3, Math.min(60, Number($('o-away').value) || 10)),
   });
   $('o-rad').addEventListener('input', () => { $('o-rv').textContent = $('o-rad').value + ' m'; });
   $('o-here').addEventListener('click', async () => {
@@ -879,7 +928,7 @@ async function exportReport() {
   const m = Number($('r-month').value);
   const per = {};
   reportRows.forEach((p) => { ((per[p.emp] = per[p.emp] || {})[p.date] = per[p.emp][p.date] || {})[p.slot] = p; });
-  const lines = [['Date', 'Day', 'Employee ID', 'Name', 'Morning check-in', 'Leave for visits', 'Back from visits', 'Night check-out', 'Duty hours', 'Late / early', 'Added by admin'].join(',')];
+  const lines = [['Date', 'Day', 'Employee ID', 'Name', 'Morning check-in', 'Leave for visits', 'Back from visits', 'Night check-out', 'Duty hours', 'Late / early', 'Added by admin', 'Auto-detected leave'].join(',')];
   Object.keys(per).sort().forEach((emp) => {
     const s = staff.find((x) => x.id === emp) || { name: emp };
     Object.keys(per[emp]).map(Number).sort((a, b) => a - b).forEach((di) => {
@@ -887,8 +936,9 @@ async function exportReport() {
       const t = (x) => (p[x] ? T.hhmm(ms(p[x].t)) : '');
       const lateList = SLOTS.filter((x) => p[x.id] && judge(x.id, ms(p[x.id].t), office) === 'late').map((x) => x.short).join(' ');
       const man = SLOTS.filter((x) => p[x.id] && p[x.id].manual).map((x) => x.short).join(' ');
+      const auto = SLOTS.filter((x) => p[x.id] && p[x.id].auto).map((x) => x.short).join(' ');
       const hrs = (dayWorked(p, di) / 60).toFixed(2);
-      lines.push([T.isoDate(di), T.dowShort(di), emp.toUpperCase(), s.name, t('amIn'), t('amOut'), t('pmIn'), t('pmOut'), hrs, lateList, man].map(csvCell).join(','));
+      lines.push([T.isoDate(di), T.dowShort(di), emp.toUpperCase(), s.name, t('amIn'), t('amOut'), t('pmIn'), t('pmOut'), hrs, lateList, man, auto].map(csvCell).join(','));
     });
   });
   const csv = '﻿' + lines.join('\r\n'); // BOM so Excel reads Arabic names correctly
@@ -913,7 +963,8 @@ if (native) {
       if (auth.currentUser) syncClock(auth.currentUser.uid);
       if (T.dateInt() !== todayDate) { todayDate = T.dateInt(); watchToday(); if (isAdmin()) startAdmin(); }
       if (tab === 'punch') beginWatch();
-      renderPunch();
+      watchKey = null; syncOfficeWatch();
+      renderPunch(); renderProfile();
     } else stopWatch();
   });
   App.addListener('backButton', () => {

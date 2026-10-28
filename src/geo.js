@@ -87,3 +87,20 @@ export function stopWatch() {
   gen++;
   if (watchId != null) { Geolocation.clearWatch({ id: watchId }).catch(() => {}); watchId = null; }
 }
+
+// ---------- Office watch (Android): records leaving the office zone automatically ----------
+export async function officeWatch(cfg) {
+  if (!native) return false;
+  try { await Guard.officeWatch({ cfg: JSON.stringify(cfg) }); return true; } catch (e) { return false; }
+}
+export async function officeStop() {
+  if (!native) return;
+  try { await Guard.officeStop(); } catch (e) { /* not running */ }
+}
+export async function batteryState() {
+  if (!native) return { unrestricted: true };
+  try { return await Guard.battery(); } catch (e) { return { unrestricted: true }; }
+}
+export async function openBattery() {
+  if (native) { try { await Guard.openBattery(); } catch (e) {} }
+}

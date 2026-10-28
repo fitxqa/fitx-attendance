@@ -106,6 +106,22 @@ service cloud.firestore {
         && inZone(request.resource.data, office())
         && orderOk(request.resource.data);
 
+      // Automatic "left the office" record from the phone's office watch (outside the zone by
+      // definition). Only check-outs, from the registered phone, timed within the last hour.
+      allow create: if active()
+        && request.resource.data.keys().hasOnly(['emp', 'name', 'slot', 'date', 'month', 't', 'lat', 'lng', 'acc', 'dist', 'device', 'manual', 'auto'])
+        && request.resource.data.auto == true && request.resource.data.manual == false
+        && request.resource.data.emp == myEmp()
+        && request.resource.data.slot in ['amOut', 'pmOut']
+        && request.resource.data.date == qdate()
+        && request.resource.data.month == qmonth()
+        && pid == myEmp() + '_' + string(qdate()) + '_' + request.resource.data.slot
+        && request.resource.data.t is timestamp
+        && request.resource.data.t <= request.time
+        && request.resource.data.t > request.time - duration.value(60, 'm')
+        && request.resource.data.device == meDoc().device
+        && orderOk(request.resource.data);
+
       // Admin corrections / approved exception requests
       allow create, update: if isAdmin()
         && request.resource.data.manual == true

@@ -132,7 +132,7 @@ h2.sec { margin: 0; font-size: 15px; font-weight: 700; }
 .hrow .dd { font-family: var(--display); font-size: 22px; font-weight: 700; line-height: 1; }
 .hrow .dw { font-size: 11px; color: #9a9a9a; }
 .tm { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--dim); }
-.tm.ok { color: var(--green); } .tm.late { color: var(--amber); } .tm.miss { color: var(--red); } .tm.man { text-decoration: underline dotted; }
+.tm.ok { color: var(--green); } .tm.late { color: var(--amber); } .tm.miss { color: var(--red); } .tm.man { text-decoration: underline dotted; } .tm.auto { font-style: italic; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; padding: 12px 20px 0; font-size: 11px; color: var(--muted); }
 .legend span { display: flex; align-items: center; gap: 6px; }
 .legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }

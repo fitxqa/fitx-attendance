@@ -3,11 +3,11 @@
 import fs from 'fs';
 const raw = process.env.FITX_ATT_FIREBASE || '';
 if (!raw.trim()) { console.log('::warning::FITX_ATT_FIREBASE secret not set — the app will show "Setup needed".'); process.exit(0); }
-const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
-if (a < 0 || b < a) { console.log('::error::FITX_ATT_FIREBASE does not contain a { ... } config block'); process.exit(1); }
-let cfg;
-try { cfg = Function(`"use strict"; return (${raw.slice(a, b + 1)});`)(); } catch (e) {
-  console.log('::error::FITX_ATT_FIREBASE could not be read: ' + e.message); process.exit(1);
+// Read each setting by name, so the whole console snippet (imports, comments, initializeApp…) works too.
+const cfg = {};
+for (const k of ['apiKey', 'authDomain', 'projectId', 'storageBucket', 'messagingSenderId', 'appId', 'measurementId']) {
+  const m = raw.match(new RegExp(`["']?${k}["']?\\s*:\\s*["']([^"']+)["']`));
+  if (m) cfg[k] = m[1].trim();
 }
 const need = ['apiKey', 'authDomain', 'projectId', 'appId'];
 const miss = need.filter((k) => !cfg[k]);

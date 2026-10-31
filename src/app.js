@@ -17,6 +17,7 @@ import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import * as T from './time.js';
 import { PAY_DEFAULT, payFor, round2 } from './payroll.js';
+import { startKiosk, pinHash } from './kiosk.js';
 import { distance, flatDistance, angle, getFix, mockCheck, startWatch, stopWatch, officeWatch, officeStop, batteryState, openBattery } from './geo.js';
 
 const VERSION = '1.0';
@@ -77,7 +78,7 @@ const mapLink = (lat, lng, label = 'Map') => `<a class="btn small ghost" style="
 const punchId = (emp, di, slot) => `${emp}_${di}_${slot}`;
 
 // ---------- UI helpers ----------
-const SCREENS = ['s-loading', 's-noconfig', 's-login', 's-setup', 's-main'];
+const SCREENS = ['s-loading', 's-noconfig', 's-login', 's-setup', 's-main', 's-kiosk'];
 function show(id) { SCREENS.forEach((s) => $(s).classList.toggle('hidden', s !== id)); }
 let toastT;
 function toast(msg, t = 2800) {
@@ -273,7 +274,7 @@ async function afterSignIn(u) {
       try { await updateDoc(doc(db, 'staff', emp), { device: DEVICE, deviceName: deviceLabel() }); me.device = DEVICE; } catch (e) { /* admin reset race */ }
     }
     await syncClock(u.uid);
-    startApp();
+    if (me.role === 'kiosk') startKioskMode(); else startApp();
   } catch (err) {
     const c = String(err.code || err.message || '');
     await signOut(auth).catch(() => {});
@@ -298,8 +299,29 @@ function signedOut() {
 }
 function stopAll() {
   watchKey = null;
+  if (kioskStop) { try { kioskStop(); } catch (e) {} kioskStop = null; }
   unsubs.forEach((f) => { try { f(); } catch (e) {} }); unsubs = [];
   stopWatch(); clearInterval(ticker); ticker = null;
+}
+
+// ---------- Office kiosk (shared tablet) ----------
+let kioskStop = null;
+function startKioskMode() {
+  stopAll();
+  officeStop(); stopWatch();
+  show('s-kiosk');
+  unsubs.push(onSnapshot(doc(db, 'staff', me.id), (s) => {
+    if (!s.exists() || s.data().uid !== auth.currentUser?.uid || s.data().disabled) { signOut(auth); }
+  }));
+  kioskStop = startKiosk({ db, me, T, SLOTS, SLOT, nextSlot, judge, OFFICE_DEFAULT, esc, initials, toast, $, exitKiosk });
+}
+async function exitKiosk() {
+  const v = await ask({ title: 'Exit kiosk', text: 'Enter the kiosk password to leave kiosk mode.', fields: [{ label: 'Kiosk password', type: 'password' }], ok: 'Exit' });
+  if (!v) return;
+  try {
+    await reauthenticateWithCredential(auth.currentUser, EmailAuthProvider.credential(auth.currentUser.email, v[0]));
+    await signOut(auth);
+  } catch (e) { toast('Wrong password'); }
 }
 
 // ---------- Main app ----------
@@ -623,6 +645,8 @@ let todayAll = {};       // emp -> {slot: punch}
 let pending = [];
 let adminSub = 'live';
 let adminUnsubs = [];
+let pinSet = {};         // emp -> has a kiosk PIN
+const isPerson = (s) => s.role !== 'kiosk';
 function startAdmin() {
   adminUnsubs.forEach((f) => f()); adminUnsubs = [];
   adminUnsubs.push(onSnapshot(collection(db, 'staff'), (s) => {
@@ -634,6 +658,7 @@ function startAdmin() {
     todayAll = {}; s.forEach((d) => { const p = d.data(); (todayAll[p.emp] = todayAll[p.emp] || {})[p.slot] = p; });
     renderAdmin();
   }, () => {}));
+  adminUnsubs.push(onSnapshot(collection(db, 'pins'), (s) => { pinSet = {}; s.forEach((d) => { pinSet[d.id] = true; }); renderAdmin(); }, () => {}));
   adminUnsubs.push(onSnapshot(query(collection(db, 'requests'), where('status', '==', 'pending')), (s) => {
     pending = []; s.forEach((d) => pending.push({ rid: d.id, ...d.data() }));
     pending.sort((a, b) => ms(b.t) - ms(a.t));
@@ -669,7 +694,7 @@ function statusOf(p) {
   return ['Not punched', 'grey'];
 }
 function renderLive() {
-  const active = staff.filter((s) => !s.disabled);
+  const active = staff.filter((s) => !s.disabled && isPerson(s));
   let inside = 0, late = 0, none = 0;
   active.forEach((s) => {
     const p = todayAll[s.id] || {};
@@ -694,13 +719,14 @@ function renderLive() {
         return `<div class="item" style="align-items:flex-start">
           <div class="av">${esc(initials(s.name))}</div>
           <div class="who"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div class="nm">${esc(s.name)}</div><span class="pill ${col}"><i></i>${st}</span></div>
-            <div class="rl">${esc(s.title || '')}${last && last.dist != null ? ` · ${last.manual ? 'added by admin' : last.auto ? `left the office at ${T.hhmm(ms(last.t))} (auto-detected)` : last.dist + ' m from office'}` : ''}</div>
+            <div class="rl">${esc(s.title || '')}${last && (last.dist != null || last.kiosk) ? ` · ${last.manual ? 'added by admin' : last.kiosk ? 'office kiosk' : last.auto ? `left the office at ${T.hhmm(ms(last.t))} (auto-detected)` : last.dist + ' m from office'}` : ''}</div>
             <div class="times">${SLOTS.map((x) => { const q = p[x.id]; return `<div><small>${x.short}</small><span class="tm ${q ? judge(x.id, ms(q.t), office) : ''} ${q && q.auto ? 'auto' : ''}">${q ? T.hhmm(ms(q.t)) + (q.manual ? '*' : '') : '--'}</span></div>`; }).join('')}</div>
-            <div class="actions"><button class="btn small ghost" data-fix="${esc(s.id)}">Fix punch</button>${last && last.lat != null ? mapLink(last.lat, last.lng) : ''}</div>
+            <div class="actions"><button class="btn small ghost" data-fix="${esc(s.id)}">Fix punch</button>${last && last.lat != null ? mapLink(last.lat, last.lng) : ''}${SLOTS.some((x) => p[x.id] && p[x.id].photo) ? `<button class="btn small ghost" data-photos="${esc(s.id)}">Photos</button>` : ''}</div>
           </div></div>`;
       }).join('') || '<div class="empty">No employees yet — add them in Employees</div>'}</div>
     </div>`;
   $('a-live').querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', () => fixPunch(b.dataset.fix)));
+  $('a-live').querySelectorAll('[data-photos]').forEach((b) => b.addEventListener('click', () => showPhotos(b.dataset.photos, todayDate, todayAll[b.dataset.photos] || {})));
 }
 async function fixPunch(emp) {
   const s = staff.find((x) => x.id === emp); if (!s) return;
@@ -750,22 +776,72 @@ async function decide(rid, ok) {
 
 // ----- Employees -----
 function renderStaff() {
+  const people = staff.filter(isPerson), kiosks = staff.filter((s) => !isPerson(s));
+  const row = (s) => `
+      <div class="item" style="align-items:flex-start;${s.disabled ? 'opacity:.55' : ''}"><div class="av">${esc(initials(s.name))}</div><div class="who">
+        <div class="nm">${esc(s.name)} ${s.role === 'admin' ? '<span class="pill orange" style="padding:2px 8px">Admin</span>' : ''} ${s.disabled ? '<span class="pill red" style="padding:2px 8px">Disabled</span>' : ''} ${isPerson(s) && pinSet[s.id] ? '<span class="pill green" style="padding:2px 8px">PIN</span>' : ''}</div>
+        <div class="rl">ID ${esc(s.id.toUpperCase())}${s.title ? ' · ' + esc(s.title) : ''} · ${s.device ? (isPerson(s) ? 'Phone: ' : 'Tablet: ') + esc(s.deviceName || 'registered') : isPerson(s) ? 'No phone yet' : 'Not signed in on a tablet yet'}</div>
+        <div class="actions">
+          ${isPerson(s) ? `<button class="btn small ghost" data-act="pin" data-id="${esc(s.id)}">Kiosk PIN</button>` : ''}
+          ${s.id === me.id ? (s.device ? `<button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">Reset my phone</button>` : '') : `
+          <button class="btn small ghost" data-act="pass" data-id="${esc(s.id)}">Password</button>
+          <button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">${isPerson(s) ? 'Reset phone' : 'Reset tablet'}</button>
+          ${isPerson(s) ? `<button class="btn small ghost" data-act="edit" data-id="${esc(s.id)}">Edit</button>` : ''}
+          <button class="btn small ${s.disabled ? 'ghost' : 'danger'}" data-act="toggle" data-id="${esc(s.id)}">${s.disabled ? 'Enable' : 'Disable'}</button>`}
+        </div>
+      </div></div>`;
   $('a-staff').innerHTML = `
     <div class="mx" style="margin-bottom:12px"><button class="btn block" id="add-emp">+ Add employee</button></div>
-    <div class="card pad mx"><div class="list">${staff.map((s) => `
-      <div class="item" style="align-items:flex-start;${s.disabled ? 'opacity:.55' : ''}"><div class="av">${esc(initials(s.name))}</div><div class="who">
-        <div class="nm">${esc(s.name)} ${s.role === 'admin' ? '<span class="pill orange" style="padding:2px 8px">Admin</span>' : ''} ${s.disabled ? '<span class="pill red" style="padding:2px 8px">Disabled</span>' : ''}</div>
-        <div class="rl">ID ${esc(s.id.toUpperCase())}${s.title ? ' · ' + esc(s.title) : ''} · ${s.device ? 'Phone: ' + esc(s.deviceName || 'registered') : 'No phone yet'}</div>
-        ${s.id === me.id ? '' : `<div class="actions">
-          <button class="btn small ghost" data-act="pass" data-id="${esc(s.id)}">Password</button>
-          <button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">Reset phone</button>
-          <button class="btn small ghost" data-act="edit" data-id="${esc(s.id)}">Edit</button>
-          <button class="btn small ${s.disabled ? 'ghost' : 'danger'}" data-act="toggle" data-id="${esc(s.id)}">${s.disabled ? 'Enable' : 'Disable'}</button>
-        </div>`}
-        ${s.id === me.id && s.device ? `<div class="actions"><button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">Reset my phone</button></div>` : ''}
-      </div></div>`).join('')}</div></div>`;
+    <div class="card pad mx"><div class="list">${people.map(row).join('')}</div></div>
+    <div class="card pad mx" style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h2 class="sec">Office kiosk tablets</h2>
+        <button class="btn small line" id="add-kiosk">+ Add kiosk</button></div>
+      <div class="muted" style="font-size:12px;line-height:1.5;margin-top:6px">A shared tablet in the office: technicians tap their name, enter their PIN and the tablet takes their photo. Sign in on the tablet with the kiosk ID and password.</div>
+      <div class="list" style="margin-top:6px">${kiosks.map(row).join('') || '<div class="empty" style="padding:14px">No kiosk tablet yet</div>'}</div>
+    </div>`;
   $('add-emp').addEventListener('click', addEmployee);
+  $('add-kiosk').addEventListener('click', addKiosk);
   $('a-staff').querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => staffAction(b.dataset.act, b.dataset.id)));
+}
+async function addKiosk() {
+  const v = await ask({ title: 'Add office kiosk tablet', text: 'Creates a login for the shared office tablet. It can only record punches with PIN + photo.',
+    fields: [{ label: 'Kiosk name', value: 'Office kiosk' }, { label: 'Kiosk ID (sign in with this on the tablet)', value: 'kiosk' },
+      { label: 'Password (6+ characters)', type: 'password', min: 6 }], ok: 'Create' });
+  if (!v) return;
+  const id = cleanId(v[1]);
+  if (!validId(id)) return toast('Kiosk ID: 2–31 letters/numbers', 3500);
+  if (v[2].length < 6) return toast('Password must be at least 6 characters');
+  try {
+    const ex = await getDoc(doc(db, 'staff', id));
+    if (ex.exists()) return toast('That ID is already used', 3500);
+    toast('Creating kiosk login…');
+    const { uid, email } = await newLogin(id, v[2]);
+    const b = writeBatch(db);
+    b.set(doc(db, 'logins', id), { email });
+    b.set(doc(db, 'accounts', uid), { emp: id });
+    b.set(doc(db, 'staff', id), { name: v[0].trim() || 'Office kiosk', title: 'Kiosk tablet', role: 'kiosk', uid, device: null, disabled: false, created: serverTimestamp() });
+    await b.commit();
+    toast(`Kiosk created — sign in on the tablet with ID ${id.toUpperCase()}`, 4500);
+  } catch (e) { toast(authMsg(String(e.code || e.message || '')), 4000); }
+}
+async function showPhotos(emp, di, p) {
+  const s = staff.find((x) => x.id === emp) || { name: emp };
+  const list = SLOTS.filter((x) => p[x.id] && p[x.id].photo);
+  $('modal-title').textContent = `${s.name} — kiosk photos`;
+  $('modal-text').classList.add('hidden');
+  $('modal-fields').innerHTML = '<div class="empty">Loading…</div>';
+  $('modal-ok').classList.add('hidden');
+  $('modal-cancel').textContent = 'Close';
+  $('modal').classList.remove('hidden');
+  const done = () => { $('modal').classList.add('hidden'); $('modal-ok').classList.remove('hidden'); $('modal-cancel').textContent = 'Cancel'; modalDone = null; };
+  modalDone = done; $('modal-cancel').onclick = done; $('modal-form').onsubmit = (e) => { e.preventDefault(); done(); };
+  const parts = await Promise.all(list.map(async (x) => {
+    try { const d = await getDoc(doc(db, 'photos', `${emp}_${di}_${x.id}`)); return { x, img: d.exists() ? d.data().img : null }; } catch (e) { return { x, img: null }; }
+  }));
+  $('modal-fields').innerHTML = parts.map(({ x, img }) => `<div style="display:flex;flex-direction:column;gap:6px">
+      <div style="font-size:13px;font-weight:600">${esc(x.label)} · ${T.hhmm(ms(p[x.id].t))}</div>
+      ${img && /^data:image\/jpeg;base64,/.test(img) ? `<img src="${img}" alt="${esc(x.label)} photo" style="width:100%;border-radius:14px;border:1px solid var(--line)">` : '<div class="muted">Photo not available</div>'}
+    </div>`).join('') || '<div class="muted">No photos</div>';
 }
 // A fresh hidden login. (The free plan can't change someone else's password, so a reset makes a new login.)
 async function newLogin(id, pass) {
@@ -816,8 +892,15 @@ async function staffAction(act, id) {
       b.update(doc(db, 'staff', id), { uid });
       await b.commit();
       toast(`Password changed for ${s.name}`);
+    } else if (act === 'pin') {
+      const v = await ask({ title: `Kiosk PIN for ${s.name}`, text: 'A 4-digit PIN they type on the office kiosk tablet. Give it to them privately.',
+        fields: [{ label: 'New 4-digit PIN', type: 'password', min: 4 }], ok: 'Save PIN' });
+      if (!v) return;
+      if (!/^\d{4}$/.test(v[0])) return toast('PIN must be exactly 4 digits', 3000);
+      await setDoc(doc(db, 'pins', id), { hash: await pinHash(id, v[0]), by: me.id, updated: serverTimestamp() });
+      toast(`PIN saved for ${s.name}`);
     } else if (act === 'phone') {
-      if (!(await confirmBox('Reset phone?', `${s.name}'s account will be tied to the next phone they sign in on.`, 'Reset'))) return;
+      if (!(await confirmBox(isPerson(s) ? 'Reset phone?' : 'Reset tablet?', `${s.name} will be tied to the next ${isPerson(s) ? 'phone' : 'tablet'} that signs in.`, 'Reset'))) return;
       await updateDoc(doc(db, 'staff', id), { device: null, deviceName: null });
       toast('Phone reset');
     } else if (act === 'edit') {
@@ -907,7 +990,7 @@ async function loadReport() {
     reportRows = []; snap.forEach((d) => reportRows.push(d.data()));
     const per = {};
     reportRows.forEach((p) => { ((per[p.emp] = per[p.emp] || {})[p.date] = per[p.emp][p.date] || {})[p.slot] = p; });
-    const ids = Array.from(new Set([...staff.map((s) => s.id), ...Object.keys(per)]));
+    const ids = Array.from(new Set([...staff.filter(isPerson).map((s) => s.id), ...Object.keys(per)]));
     const rows = ids.map((id) => {
       const s = staff.find((x) => x.id === id) || { name: id };
       const days = per[id] || {};
@@ -930,7 +1013,7 @@ async function exportReport() {
   const m = Number($('r-month').value);
   const per = {};
   reportRows.forEach((p) => { ((per[p.emp] = per[p.emp] || {})[p.date] = per[p.emp][p.date] || {})[p.slot] = p; });
-  const lines = [['Date', 'Day', 'Employee ID', 'Name', 'Morning check-in', 'Leave for visits', 'Back from visits', 'Night check-out', 'Duty hours', 'Late / early', 'Added by admin', 'Auto-detected leave'].join(',')];
+  const lines = [['Date', 'Day', 'Employee ID', 'Name', 'Morning check-in', 'Leave for visits', 'Back from visits', 'Night check-out', 'Duty hours', 'Late / early', 'Added by admin', 'Auto-detected leave', 'Office kiosk'].join(',')];
   Object.keys(per).sort().forEach((emp) => {
     const s = staff.find((x) => x.id === emp) || { name: emp };
     Object.keys(per[emp]).map(Number).sort((a, b) => a - b).forEach((di) => {
@@ -939,8 +1022,9 @@ async function exportReport() {
       const lateList = SLOTS.filter((x) => p[x.id] && judge(x.id, ms(p[x.id].t), office) === 'late').map((x) => x.short).join(' ');
       const man = SLOTS.filter((x) => p[x.id] && p[x.id].manual).map((x) => x.short).join(' ');
       const auto = SLOTS.filter((x) => p[x.id] && p[x.id].auto).map((x) => x.short).join(' ');
+      const kio = SLOTS.filter((x) => p[x.id] && p[x.id].kiosk).map((x) => x.short).join(' ');
       const hrs = (dayWorked(p, di) / 60).toFixed(2);
-      lines.push([T.isoDate(di), T.dowShort(di), emp.toUpperCase(), s.name, t('amIn'), t('amOut'), t('pmIn'), t('pmOut'), hrs, lateList, man, auto].map(csvCell).join(','));
+      lines.push([T.isoDate(di), T.dowShort(di), emp.toUpperCase(), s.name, t('amIn'), t('amOut'), t('pmIn'), t('pmOut'), hrs, lateList, man, auto, kio].map(csvCell).join(','));
     });
   });
   const csv = '﻿' + lines.join('\r\n'); // BOM so Excel reads Arabic names correctly
@@ -1006,7 +1090,7 @@ async function loadPayroll() {
       const r = payFor({ month: m, days: per[id] || {}, salary: salaries[id] || 0, adj: payAdj[id] || {}, settings: paySettings,
         office, today: T.dateInt(), since: created ? T.dateInt(created) : 0 });
       return { id, s, r, days: per[id] || {} };
-    }).filter((x) => salaries[x.id] || (x.s.role !== 'admin' && (!x.s.disabled || x.r.worked)));
+    }).filter((x) => isPerson(x.s) && (salaries[x.id] || (x.s.role !== 'admin' && (!x.s.disabled || x.r.worked))));
     renderPayroll(m);
   } catch (e) { $('py-table').innerHTML = `<div class="empty">Could not load payroll (${esc(e.code || e.message)})${String(e.code || '').includes('permission') ? '<br>Publish the latest firestore.rules in Firebase.' : ''}</div>`; }
 }
@@ -1123,6 +1207,7 @@ async function saveCsv(lines, name) {
 if (native) {
   App.addListener('appStateChange', ({ isActive }) => {
     if (!me) return;
+    if (me.role === 'kiosk') { if (isActive && auth.currentUser) syncClock(auth.currentUser.uid); return; }
     if (isActive) {
       if (auth.currentUser) syncClock(auth.currentUser.uid);
       if (T.dateInt() !== todayDate) { todayDate = T.dateInt(); watchToday(); if (isAdmin()) startAdmin(); }
@@ -1133,13 +1218,14 @@ if (native) {
   });
   App.addListener('backButton', () => {
     if (modalDone) { modalDone(null); return; }
+    if (!$('s-kiosk').classList.contains('hidden')) { const ov = $('k-ov'); if (ov && !ov.classList.contains('hidden')) $('k-close').click(); return; }
     if (!$('s-setup').classList.contains('hidden')) { show('s-login'); return; }
     if (me && tab !== 'punch') { setTab('punch'); return; }
     App.minimizeApp();
   });
 } else {
   document.addEventListener('visibilitychange', () => {
-    if (!me) return;
+    if (!me || me.role === 'kiosk') return;
     if (document.hidden) stopWatch(); else if (tab === 'punch') beginWatch();
   });
 }

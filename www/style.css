@@ -186,3 +186,35 @@ input[type=range] { width: 100%; accent-color: var(--orange); height: 28px; }
   .page > .mx { margin-left: auto; margin-right: auto; }
   .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+/* ---------- Office kiosk (shared tablet) ---------- */
+.kiosk { min-height: 100vh; padding: calc(var(--safe-top) + 20px) 24px calc(var(--safe-bottom) + 20px); display: flex; flex-direction: column; gap: 14px; }
+.k-top { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
+.k-clock { font-size: 56px; font-weight: 800; line-height: 1; }
+.k-hint { font-size: 18px; color: var(--muted); }
+.k-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; align-content: start; flex: 1; }
+.k-tile { background: var(--panel); border: 1px solid var(--line); border-radius: 22px; padding: 18px 14px; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--text); min-height: 190px; text-align: center; }
+.k-tile:active { transform: scale(.98); border-color: var(--orange); }
+.k-tn { font-size: 17px; font-weight: 700; }
+.k-next { font-size: 12px; color: var(--muted); }
+.k-exit { align-self: center; color: var(--dim); }
+.k-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .85); z-index: 15; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.k-panel { width: 100%; max-width: 900px; background: #141414; border: 1px solid var(--line); border-radius: 28px; padding: 18px; display: flex; flex-wrap: wrap; gap: 18px; }
+.k-cam { flex: 1 1 300px; position: relative; border-radius: 20px; overflow: hidden; background: #000; aspect-ratio: 4 / 3; }
+.k-cam video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: block; }
+.k-nocam { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 14px; }
+.k-side { flex: 1 1 300px; display: flex; flex-direction: column; gap: 12px; }
+.k-name { font-size: 26px; font-weight: 700; }
+.k-action { font-family: var(--display); font-size: 26px; font-weight: 800; color: var(--orange); text-transform: uppercase; letter-spacing: .5px; }
+.k-dots { display: flex; gap: 14px; justify-content: center; padding: 6px 0; }
+.k-dots span { width: 18px; height: 18px; border-radius: 50%; border: 2px solid #4a4a4a; }
+.k-dots span.on { background: var(--orange); border-color: var(--orange); }
+.k-dots.shake { animation: kshake .35s; }
+@keyframes kshake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-10px); } 75% { transform: translateX(10px); } }
+.k-msg { min-height: 20px; text-align: center; color: var(--red); font-size: 14px; font-weight: 600; }
+.k-pad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.k-pad button { height: 66px; border-radius: 18px; border: 1px solid var(--line2); background: var(--panel); color: var(--text); font-family: var(--display); font-size: 30px; font-weight: 700; }
+.k-pad button:active { background: var(--orange); color: #0b0b0b; }
+.k-done { position: absolute; inset: 0; background: #0b0b0b; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; text-align: center; }
+.k-done img { width: 240px; max-width: 70vw; border-radius: 20px; border: 3px solid var(--orange); }
+.k-tick { width: 64px; height: 64px; border-radius: 50%; background: var(--green); display: flex; align-items: center; justify-content: center; margin-top: -40px; }

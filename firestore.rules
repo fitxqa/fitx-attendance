@@ -13,6 +13,8 @@ service cloud.firestore {
     // A login is active only while it is the employee's CURRENT login and the employee is not disabled.
     function active() { return signedIn() && exists(accPath()) && meDoc().uid == request.auth.uid && meDoc().disabled != true; }
     function isAdmin() { return active() && meDoc().role == 'admin'; }
+    // Shared office tablet: can list employees and record punches with PIN + photo, nothing else.
+    function isKiosk() { return active() && meDoc().role == 'kiosk'; }
 
     // First-time setup: the very first person may make themselves admin, once.
     function setupPath() { return /databases/$(database)/documents/config/setup; }
@@ -58,6 +60,25 @@ service cloud.firestore {
         && request.resource.data.radius is number && request.resource.data.radius >= 20 && request.resource.data.radius <= 1000;
     }
 
+    // ---------- office kiosk ----------
+    // Kiosk PIN hashes: set by admins, read by the kiosk tablet to check a PIN.
+    match /pins/{emp} {
+      allow read: if isAdmin() || isKiosk();
+      allow write: if isAdmin();
+    }
+    // Photo taken by the kiosk at each punch (small JPEG, id = punch id). Admins view them.
+    match /photos/{pid} {
+      allow read, delete: if isAdmin();
+      allow create: if isKiosk()
+        && request.resource.data.keys().hasOnly(['emp', 'date', 'by', 'img', 't'])
+        && request.resource.data.by == myEmp()
+        && request.resource.data.t == request.time
+        && request.resource.data.img is string && request.resource.data.img.size() < 400000
+        && existsAfter(/databases/$(database)/documents/punches/$(pid))
+        && getAfter(/databases/$(database)/documents/punches/$(pid)).data.kiosk == true
+        && getAfter(/databases/$(database)/documents/punches/$(pid)).data.emp == request.resource.data.emp;
+    }
+
     // ---------- payroll (admin only: employees can't see salaries) ----------
     match /config/payroll {
       allow read, write: if isAdmin();
@@ -85,8 +106,8 @@ service cloud.firestore {
     }
     // Employees. Admins manage them; an employee may only register their phone once (after an admin reset).
     match /staff/{emp} {
-      allow get: if (signedIn() && exists(accPath()) && myEmp() == emp) || isAdmin();
-      allow list: if isAdmin();
+      allow get: if (signedIn() && exists(accPath()) && myEmp() == emp) || isAdmin() || isKiosk();
+      allow list: if isAdmin() || isKiosk();
       allow create: if isAdmin()
         || (bootstrapping() && emp == getAfter(accPath()).data.emp
             && request.resource.data.role == 'admin' && request.resource.data.uid == request.auth.uid);
@@ -100,7 +121,22 @@ service cloud.firestore {
     // ---------- punches ----------
     // id = <employeeId>_<yyyymmdd>_<slot>  →  only one of each punch per day.
     match /punches/{pid} {
-      allow read: if isAdmin() || (active() && resource.data.emp == myEmp());
+      allow read: if isAdmin() || isKiosk() || (active() && resource.data.emp == myEmp());
+
+      // Punch on the office kiosk tablet (PIN checked on the tablet, photo saved in /photos)
+      allow create: if isKiosk()
+        && request.resource.data.keys().hasOnly(['emp', 'name', 'slot', 'date', 'month', 't', 'lat', 'lng', 'acc', 'dist', 'device', 'manual', 'kiosk', 'by', 'photo'])
+        && request.resource.data.kiosk == true && request.resource.data.manual == false
+        && request.resource.data.by == myEmp()
+        && slotOk(request.resource.data.slot)
+        && request.resource.data.date == qdate()
+        && request.resource.data.month == qmonth()
+        && pid == request.resource.data.emp + '_' + string(qdate()) + '_' + request.resource.data.slot
+        && request.resource.data.t == request.time
+        && exists(staffPath(request.resource.data.emp))
+        && get(staffPath(request.resource.data.emp)).data.disabled != true
+        && get(staffPath(request.resource.data.emp)).data.role != 'kiosk'
+        && orderOk(request.resource.data);
 
       // Employee punch from the phone
       allow create: if active()

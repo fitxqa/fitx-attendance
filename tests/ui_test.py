@@ -114,6 +114,22 @@ with sync_playwright() as p:
     pg.screenshot(path=f'{OUT}/11-live.png', full_page=True)
     check('Rashid Khan' in pg.inner_text('#a-live'), 'live board lists employee')
 
+    # Payroll
+    pg.click('[data-sub=payroll]'); time.sleep(0.8)
+    check('not set' in pg.inner_text('#py-table'), 'payroll shows salary not set')
+    pg.click('[data-pay=fx-014]'); pg.fill('#mf-0', '3120'); pg.fill('#mf-2', '50'); pg.click('#modal-ok'); time.sleep(0.8)
+    sal = pg.evaluate("window.__store.get('salary/fx-014')")
+    check(sal and sal['monthly'] == 3120, 'salary saved in admin-only salary collection')
+    check('Pay rules' in pg.inner_text('#py-rules') and '12 h/day' in pg.inner_text('#py-rules'), 'pay rules shown with 12 h duty')
+    pg.click('#py-set'); pg.fill('#mf-2', '1.5'); pg.click('#modal-ok'); time.sleep(0.8)
+    check(pg.evaluate("window.__store.get('config/payroll').otRate") == 1.5, 'overtime rate 1.5 saved')
+    pg.screenshot(path=f'{OUT}/13-payroll.png', full_page=True)
+    with pg.expect_download() as dl:
+        pg.click('#py-export')
+    pcsv = open(dl.value.path(), encoding='utf-8-sig').read()
+    check('Net pay (QR)' in pcsv and 'FX-014' in pcsv and 'TOTAL' in pcsv, 'payroll CSV export')
+    print(pcsv)
+
     # Report + export
     pg.click('[data-sub=report]'); time.sleep(0.6)
     pg.screenshot(path=f'{OUT}/12-report.png')

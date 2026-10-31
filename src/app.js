@@ -16,6 +16,7 @@ import { App } from '@capacitor/app';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import * as T from './time.js';
+import { PAY_DEFAULT, payFor, round2 } from './payroll.js';
 import { distance, flatDistance, angle, getFix, mockCheck, startWatch, stopWatch, officeWatch, officeStop, batteryState, openBattery } from './geo.js';
 
 const VERSION = '1.0';
@@ -95,7 +96,7 @@ function ask({ title, text = '', fields = [], ok = 'OK', danger = false }) {
       const req = f.required === false ? '' : 'required';
       if (f.type === 'select') return `<label class="field">${esc(f.label)}<select id="mf-${i}">${f.options.map(([v, l]) => `<option value="${esc(v)}" ${v === f.value ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
       if (f.type === 'textarea') return `<label class="field">${esc(f.label)}<textarea id="mf-${i}" ${req}>${esc(f.value || '')}</textarea></label>`;
-      return `<label class="field">${esc(f.label)}<input id="mf-${i}" type="${f.type || 'text'}" value="${esc(f.value || '')}" ${f.min ? `minlength="${f.min}"` : ''} autocapitalize="none" autocomplete="off" ${req}></label>`;
+      return `<label class="field">${esc(f.label)}<input id="mf-${i}" type="${f.type || 'text'}" ${f.type === 'number' ? 'step="any" inputmode="decimal"' : ''} value="${esc(f.value ?? '')}" ${f.min ? `minlength="${f.min}"` : ''} autocapitalize="none" autocomplete="off" ${req}></label>`;
     }).join('');
     $('modal').classList.remove('hidden');
     const done = (val) => { $('modal').classList.add('hidden'); modalDone = null; resolve(val); };
@@ -289,8 +290,8 @@ async function afterSignIn(u) {
 function signedOut() {
   me = null; stopAll(); tab = 'punch'; adminSub = 'live';
   document.querySelectorAll('.subtabs button').forEach((x) => x.classList.toggle('on', x.dataset.sub === 'live'));
-  ['live', 'req', 'staff', 'office', 'report'].forEach((x) => $('a-' + x).classList.toggle('hidden', x !== 'live'));
-  $('a-report').innerHTML = '';
+  ['live', 'req', 'staff', 'office', 'report', 'payroll'].forEach((x) => $('a-' + x).classList.toggle('hidden', x !== 'live'));
+  $('a-report').innerHTML = ''; $('a-payroll').innerHTML = '';
   show('s-login');
   getDoc(doc(db, 'config', 'setup')).then((s) => $('setup-btn').classList.toggle('hidden', s.exists()))
     .catch(() => $('setup-btn').classList.remove('hidden'));
@@ -645,7 +646,7 @@ function startAdmin() {
 document.querySelectorAll('.subtabs button').forEach((b) => b.addEventListener('click', () => {
   adminSub = b.dataset.sub;
   document.querySelectorAll('.subtabs button').forEach((x) => x.classList.toggle('on', x === b));
-  ['live', 'req', 'staff', 'office', 'report'].forEach((x) => $('a-' + x).classList.toggle('hidden', x !== adminSub));
+  ['live', 'req', 'staff', 'office', 'report', 'payroll'].forEach((x) => $('a-' + x).classList.toggle('hidden', x !== adminSub));
   renderAdmin();
 }));
 function renderAdmin() {
@@ -655,6 +656,7 @@ function renderAdmin() {
   if (adminSub === 'staff') renderStaff();
   if (adminSub === 'office') renderOffice();
   if (adminSub === 'report' && !$('a-report').innerHTML) renderReportShell();
+  if (adminSub === 'payroll' && !$('a-payroll').innerHTML) renderPayrollShell();
 }
 
 // ----- Today (live board) -----
@@ -943,6 +945,168 @@ async function exportReport() {
   });
   const csv = '﻿' + lines.join('\r\n'); // BOM so Excel reads Arabic names correctly
   const name = `FitX-Attendance-${String(m).slice(0, 4)}-${String(m).slice(4)}.csv`;
+  try {
+    if (native) {
+      const r = await Filesystem.writeFile({ path: name, data: csv, directory: Directory.Cache, encoding: Encoding.UTF8 });
+      await Share.share({ title: name, files: [r.uri] });
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+  } catch (e) { if (!/cancel/i.test(String(e.message))) toast('Could not export (' + (e.message || e) + ')'); }
+}
+
+// ----- Payroll: monthly salary + overtime − late − absence (admin only) -----
+// Salaries live in salary/{employeeId}, settings in config/payroll, monthly adjustments in
+// payadj/{yyyymm}_{employeeId}. Only admins can read or write any of them (firestore.rules).
+let paySettings = { ...PAY_DEFAULT };
+let salaries = {};   // emp -> monthly salary
+let payAdj = {};     // emp -> { excused, bonus, deduct, note }
+let payRows = [];    // last computed rows (for export)
+const DOW_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const qr = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function renderPayrollShell() {
+  let m = T.monthInt(); const opts = [];
+  for (let i = 0; i < 12; i++) { opts.push(`<option value="${m}">${T.monthName(m)}</option>`); m = T.prevMonth(m); }
+  $('a-payroll').innerHTML = `
+    <div class="mx" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      <select class="month-sel" id="py-month" style="flex:1">${opts.join('')}</select>
+      <button class="btn small ghost" id="py-set" style="height:44px">Pay rules</button>
+      <button class="btn small" id="py-export" style="height:44px">Export Excel</button></div>
+    <div class="kpis mx" id="py-kpis"></div>
+    <div class="card pad mx" style="margin-top:12px"><div class="scroll-x" id="py-table"><div class="empty">Loading…</div></div></div>
+    <div class="mx muted" id="py-rules" style="font-size:12px;line-height:1.6;margin-top:10px"></div>`;
+  $('py-month').addEventListener('change', loadPayroll);
+  $('py-set').addEventListener('click', editPayRules);
+  $('py-export').addEventListener('click', exportPayroll);
+  loadPayroll();
+}
+
+async function loadPayroll() {
+  const m = Number($('py-month').value);
+  $('py-table').innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const [cfgSnap, salSnap, adjSnap, punchSnap] = await Promise.all([
+      getDoc(doc(db, 'config', 'payroll')),
+      getDocs(collection(db, 'salary')),
+      getDocs(query(collection(db, 'payadj'), where('month', '==', m))),
+      getDocs(query(collection(db, 'punches'), where('month', '==', m))),
+    ]);
+    paySettings = { ...PAY_DEFAULT, ...(cfgSnap.exists() ? cfgSnap.data() : {}) };
+    salaries = {}; salSnap.forEach((d) => { salaries[d.id] = Number(d.data().monthly) || 0; });
+    payAdj = {}; adjSnap.forEach((d) => { payAdj[d.data().emp] = d.data(); });
+    const per = {};
+    punchSnap.forEach((d) => { const p = d.data(); ((per[p.emp] = per[p.emp] || {})[p.date] = per[p.emp][p.date] || {})[p.slot] = p; });
+    const ids = Array.from(new Set([...staff.map((s) => s.id), ...Object.keys(per)]));
+    payRows = ids.map((id) => {
+      const s = staff.find((x) => x.id === id) || { name: id };
+      const created = ms(s.created);
+      const r = payFor({ month: m, days: per[id] || {}, salary: salaries[id] || 0, adj: payAdj[id] || {}, settings: paySettings,
+        office, today: T.dateInt(), since: created ? T.dateInt(created) : 0 });
+      return { id, s, r, days: per[id] || {} };
+    }).filter((x) => salaries[x.id] || (x.s.role !== 'admin' && (!x.s.disabled || x.r.worked)));
+    renderPayroll(m);
+  } catch (e) { $('py-table').innerHTML = `<div class="empty">Could not load payroll (${esc(e.code || e.message)})${String(e.code || '').includes('permission') ? '<br>Publish the latest firestore.rules in Firebase.' : ''}</div>`; }
+}
+
+function renderPayroll(m) {
+  const cur = paySettings.currency || 'QR';
+  const tot = payRows.reduce((a, x) => ({ net: a.net + x.r.net, ot: a.ot + x.r.otPay, ded: a.ded + x.r.lateDeduct + x.r.absenceDeduct + x.r.other }), { net: 0, ot: 0, ded: 0 });
+  $('py-kpis').innerHTML = `
+    <div class="kpi"><div class="l">Net payroll (${cur})</div><div class="v disp" style="font-size:30px">${qr(tot.net)}</div></div>
+    <div class="kpi"><div class="l">Overtime (${cur})</div><div class="v disp" style="font-size:30px;color:var(--green)">${qr(tot.ot)}</div></div>
+    <div class="kpi"><div class="l">Deductions (${cur})</div><div class="v disp" style="font-size:30px;color:var(--red)">${qr(tot.ded)}</div></div>
+    <div class="kpi"><div class="l">Employees</div><div class="v disp" style="font-size:30px">${payRows.length}</div></div>`;
+  const noSal = payRows.filter((x) => !x.r.salary).length;
+  $('py-table').innerHTML = (noSal ? `<div class="note" style="margin-bottom:10px">${noSal} employee${noSal > 1 ? 's have' : ' has'} no salary yet — tap <b>Edit</b> to set it.</div>` : '') + `
+    <table class="rep" style="min-width:900px"><thead><tr>
+      <th>Employee</th><th>Salary</th><th>Days worked</th><th>Absent</th><th>Overtime</th><th>OT pay</th><th>Late</th><th>Late ded.</th><th>Absence ded.</th><th>Other +/−</th><th>Net pay</th><th></th></tr></thead><tbody>
+    ${payRows.map((x) => { const r = x.r; return `<tr>
+      <td><b>${esc(x.s.name)}</b><br><span class="muted">${esc(x.id.toUpperCase())}</span></td>
+      <td>${r.salary ? qr(r.salary) : '<span style="color:var(--amber)">not set</span>'}</td>
+      <td>${r.worked} / ${r.workDaysSoFar}${r.openDays ? `<br><span class="muted" style="font-size:11px">${r.openDays} no check-out</span>` : ''}</td>
+      <td style="color:${r.chargedAbsent ? 'var(--red)' : 'inherit'}">${r.absent}${r.excused ? `<br><span class="muted" style="font-size:11px">${r.excused} excused</span>` : ''}</td>
+      <td>${T.fmtDur(r.otMin)}</td>
+      <td style="color:${r.otPay ? 'var(--green)' : 'inherit'}">${qr(r.otPay)}</td>
+      <td>${r.lateDays ? `${r.lateDays} day${r.lateDays > 1 ? 's' : ''}<br><span class="muted" style="font-size:11px">${r.lateMin} min</span>` : '0'}</td>
+      <td style="color:${r.lateDeduct ? 'var(--red)' : 'inherit'}">−${qr(r.lateDeduct)}</td>
+      <td style="color:${r.absenceDeduct ? 'var(--red)' : 'inherit'}">−${qr(r.absenceDeduct)}</td>
+      <td>${r.bonus || r.other ? `${r.bonus ? '+' + qr(r.bonus) : ''}${r.bonus && r.other ? '<br>' : ''}${r.other ? '−' + qr(r.other) : ''}` : '—'}</td>
+      <td><b style="font-size:14px">${qr(r.net)}</b></td>
+      <td><button class="btn small ghost" data-pay="${esc(x.id)}">Edit</button></td></tr>`; }).join('') || '<tr><td colspan="12" class="empty">No employees</td></tr>'}
+    </tbody></table>`;
+  $('py-table').querySelectorAll('[data-pay]').forEach((b) => b.addEventListener('click', () => editPay(b.dataset.pay, m)));
+  const S = paySettings;
+  $('py-rules').innerHTML = `<b>Pay rules:</b> duty ${S.dutyHours} h/day · hourly rate = salary ÷ (${S.workDays} days × ${S.dutyHours} h) ·
+    overtime = time beyond ${S.dutyHours} h (morning check-in → night check-out) × ${S.otRate} ·
+    late = ${S.lateMode === 'fixed' ? `${cur} ${S.lateFixed} per late day` : 'each late minute at the hourly rate'} (after ${office.amIn} + ${office.grace} min grace) ·
+    absent work day = −${cur} ${S.absence} · days off: ${(S.offDays || []).map((d) => DOW_NAMES[d]).join(', ') || 'none'} ·
+    days from today on are not counted as absent.`;
+}
+
+async function editPay(emp, m) {
+  const s = staff.find((x) => x.id === emp) || { name: emp };
+  const a = payAdj[emp] || {};
+  const v = await ask({ title: `${s.name} — ${T.monthName(m)}`,
+    text: 'Salary applies to every month. Excused days (approved leave, holidays) are not deducted as absent.',
+    fields: [
+      { label: `Monthly salary (${paySettings.currency || 'QR'})`, type: 'number', value: salaries[emp] || '' },
+      { label: 'Excused absent days this month', type: 'number', value: a.excused || 0, required: false },
+      { label: 'Bonus / allowance this month (+)', type: 'number', value: a.bonus || 0, required: false },
+      { label: 'Other deduction this month (−)', type: 'number', value: a.deduct || 0, required: false },
+      { label: 'Note', value: a.note || '', required: false }], ok: 'Save' });
+  if (!v) return;
+  const sal = round2(v[0]);
+  if (!(sal >= 0)) return toast('Enter a valid salary');
+  try {
+    const b = writeBatch(db);
+    b.set(doc(db, 'salary', emp), { monthly: sal, by: me.id, updated: serverTimestamp() });
+    b.set(doc(db, 'payadj', `${m}_${emp}`), { emp, month: m, excused: Math.max(0, Math.round(Number(v[1]) || 0)),
+      bonus: Math.max(0, round2(v[2])), deduct: Math.max(0, round2(v[3])), note: String(v[4] || '').slice(0, 200), by: me.id, updated: serverTimestamp() });
+    await b.commit();
+    toast('Saved'); loadPayroll();
+  } catch (e) { toast('Could not save (' + (e.code || e.message) + ')', 3500); }
+}
+
+async function editPayRules() {
+  const S = paySettings;
+  const v = await ask({ title: 'Pay rules', fields: [
+    { label: 'Duty hours per day (overtime after this)', type: 'number', value: S.dutyHours },
+    { label: 'Working days per month (for the hourly rate)', type: 'number', value: S.workDays },
+    { label: 'Overtime rate (1.25 = hourly × 1.25)', type: 'number', value: S.otRate },
+    { label: 'Late deduction', type: 'select', value: S.lateMode, options: [['minute', 'Each late minute at the hourly rate'], ['fixed', 'Fixed amount per late day']] },
+    { label: `Fixed late amount per day (${S.currency}) — if "fixed"`, type: 'number', value: S.lateFixed, required: false },
+    { label: `Deduction per absent day (${S.currency})`, type: 'number', value: S.absence },
+    { label: 'Weekly day off', type: 'select', value: String((S.offDays || [])[0] ?? 'none'),
+      options: [['none', 'None (7-day week)'], ...DOW_NAMES.map((d, i) => [String(i), d])] }], ok: 'Save' });
+  if (!v) return;
+  const n = (x, lo, hi, def) => { const y = Number(x); return isFinite(y) && y >= lo && y <= hi ? y : def; };
+  const next = {
+    dutyHours: n(v[0], 1, 24, 12), workDays: n(v[1], 1, 31, 26), otRate: n(v[2], 1, 5, 1.25),
+    lateMode: v[3] === 'fixed' ? 'fixed' : 'minute', lateFixed: n(v[4], 0, 100000, 0), absence: n(v[5], 0, 100000, 100),
+    offDays: v[6] === 'none' ? [] : [Number(v[6])], currency: S.currency || 'QR',
+  };
+  try { await setDoc(doc(db, 'config', 'payroll'), { ...next, by: me.id, updated: serverTimestamp() }); toast('Pay rules saved'); loadPayroll(); }
+  catch (e) { toast('Could not save (' + (e.code || e.message) + ')', 3500); }
+}
+
+async function exportPayroll() {
+  const m = Number($('py-month').value);
+  const cur = paySettings.currency || 'QR';
+  const lines = [[`Employee ID`, 'Name', `Salary (${cur})`, 'Hourly rate', 'Days worked', 'Work days so far', 'Absent', 'Excused', 'Charged absent',
+    'Duty hours', 'Overtime hours', `OT pay (${cur})`, 'Late days', 'Late minutes', `Late deduction (${cur})`, `Absence deduction (${cur})`,
+    `Bonus (${cur})`, `Other deduction (${cur})`, `Net pay (${cur})`, 'Note'].join(',')];
+  payRows.forEach((x) => { const r = x.r; lines.push([x.id.toUpperCase(), x.s.name, r.salary, r.hourly, r.worked, r.workDaysSoFar, r.absent, r.excused, r.chargedAbsent,
+    (r.dutyMin / 60).toFixed(2), (r.otMin / 60).toFixed(2), r.otPay, r.lateDays, r.lateMin, r.lateDeduct, r.absenceDeduct, r.bonus, r.other, r.net,
+    (payAdj[x.id] || {}).note || ''].map(csvCell).join(',')); });
+  const t = payRows.reduce((a, x) => a + x.r.net, 0);
+  lines.push(['', 'TOTAL', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', round2(t), ''].map(csvCell).join(','));
+  await saveCsv(lines, `FitX-Payroll-${String(m).slice(0, 4)}-${String(m).slice(4)}.csv`);
+}
+async function saveCsv(lines, name) {
+  const csv = '﻿' + lines.join('\r\n');
   try {
     if (native) {
       const r = await Filesystem.writeFile({ path: name, data: csv, directory: Directory.Cache, encoding: Encoding.UTF8 });

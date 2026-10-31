@@ -23,6 +23,7 @@ This is a **completely separate project** from FitX Call: its own Firebase proje
 - **Employees**: add, change password, reset phone, edit, make admin, disable (history is kept).
 - **Office zone**: set the office point (“Use my current location”), radius, the two shift times and the grace period.
 - **Monthly report**: days, hours, late and missed check-outs per employee, and **Export Excel** (CSV, opens in Excel).
+- **Payroll**: monthly salary per employee; overtime beyond 12 duty hours (× 1.25), late deduction (per late minute at the hourly rate, or a fixed amount), QR 100 per absent work day, excused days, bonus / other deductions, **Export Excel**. Salaries are visible to admins only.
 
 ## How cheating is blocked
 Every punch is re-checked by the database rules (`firestore.rules`), not just by the app:

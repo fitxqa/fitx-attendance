@@ -58,6 +58,17 @@ service cloud.firestore {
         && request.resource.data.radius is number && request.resource.data.radius >= 20 && request.resource.data.radius <= 1000;
     }
 
+    // ---------- payroll (admin only: employees can't see salaries) ----------
+    match /config/payroll {
+      allow read, write: if isAdmin();
+    }
+    match /salary/{emp} {
+      allow read, write: if isAdmin();
+    }
+    match /payadj/{id} {
+      allow read, write: if isAdmin();
+    }
+
     // ---------- accounts ----------
     // Employee ID -> hidden login email (read one at a time before sign-in; never listed).
     match /logins/{id} {

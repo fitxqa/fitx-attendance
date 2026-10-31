@@ -22,7 +22,7 @@ function matches(path, q) {
   const parts = path.split('/');
   if (parts.length !== 2 || parts[0] !== q.col) return false;
   const d = store.get(path);
-  return q.wheres.every(([f, op, v]) => op === '==' && d[f] === v);
+  return (q.wheres || []).every(([f, op, v]) => op === '==' && d[f] === v);
 }
 function notify() {
   for (const l of listeners) l();

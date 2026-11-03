@@ -4,7 +4,7 @@
   "description": "FitX Attendance - staff check-in/out with a 100 m GPS office zone",
   "private": true,
   "scripts": {
-    "build": "esbuild src/app.js --bundle --minify --target=es2020,chrome90 --outfile=www/app.js",
+    "build": "esbuild src/app.js --bundle --minify --target=es2020,chrome90 --outfile=www/app.js && esbuild src/face-entry.js --bundle --minify --target=es2020,chrome90 --outfile=www/face.js",
     "sync": "npm run build && npx cap sync android"
   },
   "dependencies": {
@@ -14,6 +14,7 @@
     "@capacitor/filesystem": "^8.1.5",
     "@capacitor/geolocation": "^8.2.4",
     "@capacitor/share": "^8.0.3",
+    "@vladmandic/face-api": "^1.7.15",
     "firebase": "^13.1.0"
   },
   "devDependencies": {

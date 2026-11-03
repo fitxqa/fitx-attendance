@@ -5,3 +5,4 @@ tests/www/
 *.log
 *.keystore
 FitX-Attendance-Secret.txt
+www/face.js

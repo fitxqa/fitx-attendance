@@ -1,7 +1,40 @@
 // Office kiosk: one shared tablet in the office. Technician taps their name, enters their
 // 4-digit PIN, the front camera takes a photo, and the next punch is saved for them.
 // The kiosk signs in with its own "kiosk" login, which can only create punches + photos.
-import { doc, collection, query, where, onSnapshot, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { doc, collection, query, where, onSnapshot, writeBatch, setDoc, serverTimestamp } from 'firebase/firestore';
+
+// Face engine (www/face.js) is loaded on demand. Tests can put their own window.FitxFace first.
+let faceLoading = null;
+export function loadFaceLib() {
+  if (window.FitxFace) return window.FitxFace.load().then(() => window.FitxFace);
+  if (!faceLoading) {
+    faceLoading = new Promise((ok, fail) => {
+      const s = document.createElement('script');
+      s.src = 'face.js'; s.onload = () => ok(); s.onerror = () => { faceLoading = null; fail(new Error('face.js')); };
+      document.head.appendChild(s);
+    }).then(() => window.FitxFace.load()).then(() => window.FitxFace);
+    faceLoading.catch(() => { faceLoading = null; });
+  }
+  return faceLoading;
+}
+const sleep = (t) => new Promise((r) => setTimeout(r, t));
+// Scan the video until a clear face is seen. Returns { desc } or { error }.
+export async function scanFace(video, onMsg, { frames = 1, timeout = 10000 } = {}) {
+  const F = await loadFaceLib();
+  const got = [];
+  const end = Date.now() + timeout;
+  while (Date.now() < end && got.length < frames) {
+    if (!video.videoWidth) { await sleep(200); continue; }
+    let r;
+    try { r = await F.describe(video); } catch (e) { return { error: 'Face scan failed' }; }
+    if (!r.faces) onMsg('Look straight at the camera');
+    else if (r.size < 0.12) onMsg('Come a little closer');
+    else { got.push(r.desc); onMsg(frames > 1 ? `Hold still… ${got.length}/${frames}` : 'Face found'); }
+    await sleep(frames > 1 ? 350 : 120);
+  }
+  if (got.length < frames) return { error: 'No clear face found — look at the camera and try again' };
+  return { desc: got[0], descs: got };
+}
 
 export async function pinHash(emp, pin) {
   const data = new TextEncoder().encode(`fitx:${emp}:${pin}`);
@@ -12,6 +45,7 @@ export async function pinHash(emp, pin) {
 export function startKiosk(ctx) {
   const { db, me, T, SLOTS, SLOT, nextSlot, judge, OFFICE_DEFAULT, esc, initials, toast, exitKiosk, $ } = ctx;
   const root = $('s-kiosk');
+  let faces = {};
   let staff = [], pins = {}, punches = {}, office = { ...OFFICE_DEFAULT }, todayDate = T.dateInt();
   let sel = null, pin = '', busy = false, fails = {}, idleT = null, stream = null, wake = null;
   const unsubs = [];
@@ -21,15 +55,15 @@ export function startKiosk(ctx) {
     <div class="kiosk">
       <header class="k-top">
         <div><div class="logo" style="font-size:38px">Fit<b>X</b></div><div class="tag" id="k-office">Office kiosk</div></div>
-        <div style="text-align:right"><div class="k-clock disp" id="k-clock">--:--</div><div class="muted" id="k-date" style="font-size:14px"></div></div>
+        <div style="text-align:right"><div class="k-clock disp" id="k-clock">--:--</div><div class="muted" id="k-date" style="font-size:14px"></div><div id="k-face" style="margin-top:6px"><span class="pill grey"><i></i>Loading face scan…</span></div></div>
       </header>
-      <div class="k-hint">Tap your name to punch</div>
+      <div class="k-hint">Tap your name, enter your PIN and look at the camera</div>
       <div class="k-grid" id="k-grid"><div class="empty">Loading…</div></div>
       <button class="link k-exit" id="k-exit" type="button">Exit kiosk</button>
     </div>
     <div class="k-overlay hidden" id="k-ov" role="dialog" aria-modal="true" aria-labelledby="k-name">
       <div class="k-panel">
-        <div class="k-cam"><video id="k-video" autoplay playsinline muted></video><div class="k-nocam hidden" id="k-nocam">Camera not available</div></div>
+        <div class="k-cam"><video id="k-video" autoplay playsinline muted></video><div class="k-oval" aria-hidden="true"></div><div class="k-nocam hidden" id="k-nocam">Camera not available</div></div>
         <div class="k-side">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
             <div><div class="k-name" id="k-name"></div><div class="k-action" id="k-action"></div></div>
@@ -58,6 +92,11 @@ export function startKiosk(ctx) {
     render();
   }, (e) => { $('k-grid').innerHTML = `<div class="empty">Cannot load employees (${esc(e.code || e.message)}). Publish the latest rules.</div>`; }));
   unsubs.push(onSnapshot(collection(db, 'pins'), (s) => { pins = {}; s.forEach((d) => { pins[d.id] = d.data().hash; }); render(); }, () => {}));
+  unsubs.push(onSnapshot(collection(db, 'faces'), (s) => { faces = {}; s.forEach((d) => { faces[d.id] = d.data().descs || []; }); }, () => {}));
+  // Face engine: load in the background so the first scan is quick.
+  let faceReady = false;
+  loadFaceLib().then(() => { faceReady = true; $('k-face').innerHTML = '<span class="pill green"><i></i>Face scan ready</span>'; })
+    .catch(() => { $('k-face').innerHTML = '<span class="pill red"><i></i>Face scan not available</span>'; });
   unsubs.push(onSnapshot(doc(db, 'config', 'office'), (s) => { office = { ...OFFICE_DEFAULT, ...(s.exists() ? s.data() : {}) }; $('k-office').textContent = office.name + ' · kiosk'; render(); }, () => {}));
   let punchUnsub = null;
   function watchPunches() {
@@ -184,6 +223,34 @@ export function startKiosk(ctx) {
       pin = ''; dots(); busy = false; return;
     }
     delete fails[emp];
+    // ---- face scan (PIN was right) ----
+    if (!stream) { $('k-msg').textContent = 'Camera needed for the face scan'; pin = ''; dots(); busy = false; return; }
+    $('k-msg').style.color = 'var(--orange2)';
+    const say = (t) => { $('k-msg').textContent = t; };
+    const enrolled = (faces[emp] || []).length > 0;
+    say(enrolled ? 'Scanning face…' : 'First time: registering your face…');
+    let scan;
+    try { scan = await scanFace($('k-video'), say, { frames: enrolled ? 1 : 3 }); } catch (e) { scan = { error: 'Face scan not available — ask the admin' }; }
+    $('k-msg').style.color = '';
+    if (scan.error) { say(scan.error); pin = ''; dots(); busy = false; idle(); return; }
+    let faceVal;
+    if (enrolled) {
+      const d = window.FitxFace.best(scan.desc, faces[emp]);
+      if (d >= window.FitxFace.MATCH) {
+        const shot = snap();
+        try { await setDoc(doc(collection(db, 'alerts')), { emp, name, slot, kind: 'face', dist: Math.round(d * 1000) / 1000, by: me.id, img: shot || '', t: serverTimestamp() }); } catch (e) {}
+        const n = (fails[emp] ? fails[emp].n : 0) + 1;
+        fails[emp] = { n, until: n >= 5 ? Date.now() + 60000 : 0 };
+        say(`Face does not match ${name}. The admin has been notified.`);
+        $('k-dots').classList.add('shake'); setTimeout(() => $('k-dots').classList.remove('shake'), 400);
+        pin = ''; dots(); busy = false; idle(); return;
+      }
+      faceVal = Math.round(d * 1000) / 1000;
+    } else {
+      try { await setDoc(doc(db, 'faces', emp), { descs: scan.descs, by: me.id, t: serverTimestamp(), img: snap() || '' }); faces[emp] = scan.descs; }
+      catch (e) { say('Could not register the face — ask the admin'); pin = ''; dots(); busy = false; return; }
+      faceVal = 'new';
+    }
     const photo = snap();
     const di = T.dateInt();
     const pid = `${emp}_${di}_${slot}`;
@@ -191,7 +258,7 @@ export function startKiosk(ctx) {
       const b = writeBatch(db);
       b.set(doc(db, 'punches', pid), {
         emp, name, slot, date: di, month: Math.floor(di / 100), t: serverTimestamp(),
-        lat: null, lng: null, acc: null, dist: null, device: null, manual: false, kiosk: true, by: me.id, photo: !!photo,
+        lat: null, lng: null, acc: null, dist: null, device: null, manual: false, kiosk: true, by: me.id, photo: !!photo, face: faceVal,
       });
       if (photo) b.set(doc(db, 'photos', pid), { emp, date: di, by: me.id, img: photo, t: serverTimestamp() });
       await b.commit();
@@ -199,7 +266,7 @@ export function startKiosk(ctx) {
       $('k-photo').src = photo || '';
       $('k-photo').classList.toggle('hidden', !photo);
       $('k-dname').textContent = name;
-      $('k-daction').textContent = `${SLOT[slot].label} · ${T.hhmm(T.now())}`;
+      $('k-daction').textContent = `${SLOT[slot].label} · ${T.hhmm(T.now())}${faceVal === 'new' ? ' · face registered' : ' · face matched'}`;
       $('k-done').classList.remove('hidden');
       if (navigator.vibrate) navigator.vibrate(80);
       clearTimeout(idleT); idleT = setTimeout(close, 3500);

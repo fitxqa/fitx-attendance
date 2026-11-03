@@ -17,7 +17,7 @@ import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import * as T from './time.js';
 import { PAY_DEFAULT, payFor, round2 } from './payroll.js';
-import { startKiosk, pinHash } from './kiosk.js';
+import { startKiosk, pinHash, loadFaceLib, scanFace } from './kiosk.js';
 import { distance, flatDistance, angle, getFix, mockCheck, startWatch, stopWatch, officeWatch, officeStop, batteryState, openBattery } from './geo.js';
 
 const VERSION = '1.0';
@@ -646,6 +646,8 @@ let pending = [];
 let adminSub = 'live';
 let adminUnsubs = [];
 let pinSet = {};         // emp -> has a kiosk PIN
+let faceSet = {};        // emp -> has a registered face
+let alerts = [];         // face-mismatch alerts from the kiosk
 const isPerson = (s) => s.role !== 'kiosk';
 function startAdmin() {
   adminUnsubs.forEach((f) => f()); adminUnsubs = [];
@@ -659,12 +661,16 @@ function startAdmin() {
     renderAdmin();
   }, () => {}));
   adminUnsubs.push(onSnapshot(collection(db, 'pins'), (s) => { pinSet = {}; s.forEach((d) => { pinSet[d.id] = true; }); renderAdmin(); }, () => {}));
+  adminUnsubs.push(onSnapshot(collection(db, 'faces'), (s) => { faceSet = {}; s.forEach((d) => { faceSet[d.id] = true; }); renderAdmin(); }, () => {}));
+  adminUnsubs.push(onSnapshot(collection(db, 'alerts'), (s) => {
+    alerts = []; s.forEach((d) => alerts.push({ aid: d.id, ...d.data() }));
+    alerts.sort((a, b) => ms(b.t) - ms(a.t));
+    updateBadge(); renderAdmin();
+  }, () => {}));
   adminUnsubs.push(onSnapshot(query(collection(db, 'requests'), where('status', '==', 'pending')), (s) => {
     pending = []; s.forEach((d) => pending.push({ rid: d.id, ...d.data() }));
     pending.sort((a, b) => ms(b.t) - ms(a.t));
-    $('req-count').textContent = pending.length ? `(${pending.length})` : '';
-    $('admin-dot').textContent = pending.length; $('admin-dot').classList.toggle('hidden', !pending.length);
-    renderAdmin();
+    updateBadge(); renderAdmin();
   }, () => {}));
   unsubs.push(() => { adminUnsubs.forEach((f) => f()); adminUnsubs = []; });
 }
@@ -747,7 +753,27 @@ async function fixPunch(emp) {
 }
 
 // ----- Requests -----
+function updateBadge() {
+  const n = pending.length + alerts.length;
+  $('req-count').textContent = n ? `(${n})` : '';
+  $('admin-dot').textContent = n; $('admin-dot').classList.toggle('hidden', !n);
+}
 function renderRequests() {
+  renderReqList();
+  if (!alerts.length) return;
+  $('a-req').insertAdjacentHTML('afterbegin', `<div class="card pad mx" style="margin-bottom:12px;border-color:var(--red)">
+    <h2 class="sec" style="color:var(--red)">Face did not match (${alerts.length})</h2>
+    <div class="muted" style="font-size:12px;margin-top:4px">Someone typed the right PIN on the kiosk, but the face was not that employee. No punch was saved.</div>
+    <div class="list" style="margin-top:6px">${alerts.map((a) => `<div class="item" style="align-items:flex-start">
+      <div style="width:84px;flex:none">${a.img ? `<img src="${/^data:image\/jpeg;base64,/.test(a.img) ? a.img : ''}" alt="Kiosk photo" style="width:84px;border-radius:12px">` : '<div class="av">?</div>'}</div>
+      <div class="who"><div class="nm">${esc(a.name)} · ${esc(SLOT[a.slot] ? SLOT[a.slot].label : a.slot)}</div>
+        <div class="rl">${a.t ? T.dowShort(T.dateInt(ms(a.t))) + ' ' + (T.dateInt(ms(a.t)) % 100) + ' · ' + T.hhmm(ms(a.t)) : ''} · match ${Math.max(0, Math.round((1 - (a.dist || 1)) * 100))}%</div>
+        <div class="actions"><button class="btn small ghost" data-al="${a.aid}">Dismiss</button><button class="btn small ghost" data-alface="${esc(a.emp)}">Reset face</button></div>
+      </div></div>`).join('')}</div></div>`);
+  $('a-req').querySelectorAll('[data-al]').forEach((b) => b.addEventListener('click', async () => { try { await deleteDoc(doc(db, 'alerts', b.dataset.al)); } catch (e) { toast('Could not dismiss'); } }));
+  $('a-req').querySelectorAll('[data-alface]').forEach((b) => b.addEventListener('click', () => faceAction(b.dataset.alface)));
+}
+function renderReqList() {
   $('a-req').innerHTML = `<div class="card pad mx"><h2 class="sec">Exception requests</h2><div class="list" style="margin-top:6px">${pending.map((r) => `
     <div class="item" style="align-items:flex-start"><div class="av">${esc(initials(r.name))}</div><div class="who">
       <div class="nm">${esc(r.name)} · ${esc(SLOT[r.slot] ? SLOT[r.slot].label : r.slot)}</div>
@@ -779,15 +805,16 @@ function renderStaff() {
   const people = staff.filter(isPerson), kiosks = staff.filter((s) => !isPerson(s));
   const row = (s) => `
       <div class="item" style="align-items:flex-start;${s.disabled ? 'opacity:.55' : ''}"><div class="av">${esc(initials(s.name))}</div><div class="who">
-        <div class="nm">${esc(s.name)} ${s.role === 'admin' ? '<span class="pill orange" style="padding:2px 8px">Admin</span>' : ''} ${s.disabled ? '<span class="pill red" style="padding:2px 8px">Disabled</span>' : ''} ${isPerson(s) && pinSet[s.id] ? '<span class="pill green" style="padding:2px 8px">PIN</span>' : ''}</div>
+        <div class="nm">${esc(s.name)} ${s.role === 'admin' ? '<span class="pill orange" style="padding:2px 8px">Admin</span>' : ''} ${s.disabled ? '<span class="pill red" style="padding:2px 8px">Disabled</span>' : ''} ${isPerson(s) && pinSet[s.id] ? '<span class="pill green" style="padding:2px 8px">PIN</span>' : ''} ${isPerson(s) && faceSet[s.id] ? '<span class="pill green" style="padding:2px 8px">Face</span>' : ''}</div>
         <div class="rl">ID ${esc(s.id.toUpperCase())}${s.title ? ' · ' + esc(s.title) : ''} · ${s.device ? (isPerson(s) ? 'Phone: ' : 'Tablet: ') + esc(s.deviceName || 'registered') : isPerson(s) ? 'No phone yet' : 'Not signed in on a tablet yet'}</div>
         <div class="actions">
-          ${isPerson(s) ? `<button class="btn small ghost" data-act="pin" data-id="${esc(s.id)}">Kiosk PIN</button>` : ''}
+          ${isPerson(s) ? `<button class="btn small ghost" data-act="pin" data-id="${esc(s.id)}">Kiosk PIN</button><button class="btn small ghost" data-act="face" data-id="${esc(s.id)}">Face</button>` : ''}
           ${s.id === me.id ? (s.device ? `<button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">Reset my phone</button>` : '') : `
           <button class="btn small ghost" data-act="pass" data-id="${esc(s.id)}">Password</button>
           <button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">${isPerson(s) ? 'Reset phone' : 'Reset tablet'}</button>
           ${isPerson(s) ? `<button class="btn small ghost" data-act="edit" data-id="${esc(s.id)}">Edit</button>` : ''}
-          <button class="btn small ${s.disabled ? 'ghost' : 'danger'}" data-act="toggle" data-id="${esc(s.id)}">${s.disabled ? 'Enable' : 'Disable'}</button>`}
+          <button class="btn small ${s.disabled ? 'ghost' : 'danger'}" data-act="toggle" data-id="${esc(s.id)}">${s.disabled ? 'Enable' : 'Disable'}</button>
+          ${isPerson(s) ? '' : `<button class="btn small danger" data-act="delkiosk" data-id="${esc(s.id)}">Delete</button>`}`}
         </div>
       </div></div>`;
   $('a-staff').innerHTML = `
@@ -824,24 +851,75 @@ async function addKiosk() {
     toast(`Kiosk created — sign in on the tablet with ID ${id.toUpperCase()}`, 4500);
   } catch (e) { toast(authMsg(String(e.code || e.message || '')), 4000); }
 }
-async function showPhotos(emp, di, p) {
-  const s = staff.find((x) => x.id === emp) || { name: emp };
-  const list = SLOTS.filter((x) => p[x.id] && p[x.id].photo);
-  $('modal-title').textContent = `${s.name} — kiosk photos`;
+// Bottom sheet for photos / face registration. ok = label for the main button, or null for "Close" only.
+function sheet(title, ok = null) {
+  $('modal-title').textContent = title;
   $('modal-text').classList.add('hidden');
   $('modal-fields').innerHTML = '<div class="empty">Loading…</div>';
-  $('modal-ok').classList.add('hidden');
-  $('modal-cancel').textContent = 'Close';
+  $('modal-ok').classList.toggle('hidden', !ok);
+  if (ok) $('modal-ok').textContent = ok;
+  $('modal-cancel').textContent = ok ? 'Cancel' : 'Close';
   $('modal').classList.remove('hidden');
-  const done = () => { $('modal').classList.add('hidden'); $('modal-ok').classList.remove('hidden'); $('modal-cancel').textContent = 'Cancel'; modalDone = null; };
-  modalDone = done; $('modal-cancel').onclick = done; $('modal-form').onsubmit = (e) => { e.preventDefault(); done(); };
-  const parts = await Promise.all(list.map(async (x) => {
-    try { const d = await getDoc(doc(db, 'photos', `${emp}_${di}_${x.id}`)); return { x, img: d.exists() ? d.data().img : null }; } catch (e) { return { x, img: null }; }
+  const st = { onOk: null, onClose: null };
+  const done = () => { $('modal').classList.add('hidden'); $('modal-ok').classList.remove('hidden'); $('modal-cancel').textContent = 'Cancel'; modalDone = null; if (st.onClose) st.onClose(); };
+  modalDone = done; $('modal-cancel').onclick = done;
+  $('modal-form').onsubmit = (e) => { e.preventDefault(); if (st.onOk) st.onOk(); else done(); };
+  st.close = done; st.body = $('modal-fields');
+  return st;
+}
+const faceNote = (f) => (f === 'new' ? 'face registered' : typeof f === 'number' ? `face match ${Math.round((1 - f) * 100)}%` : '');
+const imgTag = (img, alt) => (img && /^data:image\/jpeg;base64,/.test(img)
+  ? `<img src="${img}" alt="${esc(alt)}" style="width:100%;border-radius:14px;border:1px solid var(--line)">` : '<div class="muted">Photo not available</div>');
+// items: [{ label, pid, t, face }]
+async function showPhotoList(title, items) {
+  const sh = sheet(title);
+  const parts = await Promise.all(items.map(async (it) => {
+    try { const d = await getDoc(doc(db, 'photos', it.pid)); return { ...it, img: d.exists() ? d.data().img : null }; } catch (e) { return { ...it, img: null }; }
   }));
-  $('modal-fields').innerHTML = parts.map(({ x, img }) => `<div style="display:flex;flex-direction:column;gap:6px">
-      <div style="font-size:13px;font-weight:600">${esc(x.label)} · ${T.hhmm(ms(p[x.id].t))}</div>
-      ${img && /^data:image\/jpeg;base64,/.test(img) ? `<img src="${img}" alt="${esc(x.label)} photo" style="width:100%;border-radius:14px;border:1px solid var(--line)">` : '<div class="muted">Photo not available</div>'}
-    </div>`).join('') || '<div class="muted">No photos</div>';
+  sh.body.innerHTML = parts.map((it) => `<div style="display:flex;flex-direction:column;gap:6px">
+      <div style="font-size:13px;font-weight:600">${esc(it.label)} · ${T.hhmm(ms(it.t))}${it.face != null ? ` · <span style="color:var(--green)">${faceNote(it.face)}</span>` : ''}</div>
+      ${imgTag(it.img, it.label + ' photo')}</div>`).join('') || '<div class="muted">No photos</div>';
+}
+function showPhotos(emp, di, p) {
+  const s = staff.find((x) => x.id === emp) || { name: emp };
+  showPhotoList(`${s.name} — kiosk photos`, SLOTS.filter((x) => p[x.id] && p[x.id].photo)
+    .map((x) => ({ label: x.label, pid: `${emp}_${di}_${x.id}`, t: p[x.id].t, face: p[x.id].face })));
+}
+// Register an employee's face from the admin's own phone camera (or reset it).
+async function faceAction(emp) {
+  const s = staff.find((x) => x.id === emp) || { name: emp };
+  if (faceSet[emp]) {
+    const v = await ask({ title: `Face — ${s.name}`, text: 'A face is registered. Reset it to register again (the next kiosk punch with the right PIN registers it), or register it now with this phone.',
+      fields: [{ label: 'Action', type: 'select', value: 'reset', options: [['reset', 'Reset face'], ['now', 'Register again now with this phone']] }], ok: 'Continue' });
+    if (!v) return;
+    if (v[0] === 'reset') { try { await deleteDoc(doc(db, 'faces', emp)); toast('Face reset'); } catch (e) { toast('Could not reset (' + (e.code || e.message) + ')'); } return; }
+  }
+  const sh = sheet(`Register face — ${s.name}`, 'Scan face');
+  sh.body.innerHTML = `<div class="muted" style="font-size:13px;line-height:1.5">Point the camera at ${esc(s.name)}'s face, in good light, then tap <b>Scan face</b>.</div>
+    <div class="k-cam" style="aspect-ratio:3/4"><video id="rf-video" autoplay playsinline muted></video><div class="k-oval"></div></div>
+    <div class="row2"><button type="button" class="btn small ghost" id="rf-flip">Switch camera</button><div class="muted" id="rf-msg" style="font-size:13px;align-self:center"></div></div>`;
+  let stream = null, facing = 'user';
+  const start = async () => {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing }, audio: false }); $('rf-video').srcObject = stream; $('rf-video').style.transform = facing === 'user' ? 'scaleX(-1)' : 'none'; }
+    catch (e) { $('rf-msg').textContent = 'Camera not available'; }
+  };
+  sh.onClose = () => { if (stream) stream.getTracks().forEach((t) => t.stop()); };
+  $('rf-flip').onclick = () => { facing = facing === 'user' ? 'environment' : 'user'; start(); };
+  start();
+  loadFaceLib().catch(() => { $('rf-msg').textContent = 'Face scan not available'; });
+  sh.onOk = async () => {
+    $('modal-ok').disabled = true;
+    try {
+      const r = await scanFace($('rf-video'), (t) => { $('rf-msg').textContent = t; }, { frames: 3 });
+      if (r.error) { $('rf-msg').textContent = r.error; return; }
+      const v = $('rf-video'), c = document.createElement('canvas'); c.width = 360; c.height = Math.round((v.videoHeight / v.videoWidth) * 360);
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+      await setDoc(doc(db, 'faces', emp), { descs: r.descs, by: me.id, t: serverTimestamp(), img: c.toDataURL('image/jpeg', 0.6) });
+      toast(`Face registered for ${s.name}`); sh.close();
+    } catch (e) { $('rf-msg').textContent = 'Could not register (' + (e.code || e.message) + ')'; }
+    finally { $('modal-ok').disabled = false; }
+  };
 }
 // A fresh hidden login. (The free plan can't change someone else's password, so a reset makes a new login.)
 async function newLogin(id, pass) {
@@ -892,6 +970,16 @@ async function staffAction(act, id) {
       b.update(doc(db, 'staff', id), { uid });
       await b.commit();
       toast(`Password changed for ${s.name}`);
+    } else if (act === 'face') {
+      await faceAction(id);
+    } else if (act === 'delkiosk') {
+      if (!(await confirmBox(`Delete ${s.name}?`, 'The kiosk tablet is signed out and this kiosk login is removed. Punches already made on it are kept.', 'Delete', true))) return;
+      const b = writeBatch(db);
+      b.delete(doc(db, 'staff', id));
+      b.delete(doc(db, 'logins', id));
+      if (s.uid) b.delete(doc(db, 'accounts', s.uid));
+      await b.commit();
+      toast('Kiosk deleted');
     } else if (act === 'pin') {
       const v = await ask({ title: `Kiosk PIN for ${s.name}`, text: 'A 4-digit PIN they type on the office kiosk tablet. Give it to them privately.',
         fields: [{ label: 'New 4-digit PIN', type: 'password', min: 4 }], ok: 'Save PIN' });
@@ -938,6 +1026,7 @@ function renderOffice() {
     <label class="field">Count as left after (minutes outside the zone)<input id="o-away" type="number" min="3" max="60" value="${o.away ?? 10}"></label>
     <div class="muted" style="font-size:12px;line-height:1.5">While a technician is checked in, the phone notices when they walk out. After this many minutes outside, “Leave for site visits” (or the night check-out) is saved with the time they left.</div>
     <button class="btn block" id="o-save">Save zone</button>
+    ${officeSet ? '<button class="btn ghost block" id="o-clear" type="button" style="color:var(--red)">Clear office zone</button>' : ''}
     <div class="muted" style="font-size:12px;line-height:1.5">Tip: stand in the middle of the office and tap “Use my current location” for the most accurate centre point.</div>
   </div>`;
   const read = () => ({
@@ -956,6 +1045,11 @@ function renderOffice() {
       renderOffice(); return;
     } catch (e) { toast(e.message, 4000); }
     $('o-here').textContent = 'Use my current location'; $('o-here').disabled = false;
+  });
+  if ($('o-clear')) $('o-clear').addEventListener('click', async () => {
+    if (!(await confirmBox('Clear office zone?', 'The office location is removed. Nobody can punch until you set a new zone.', 'Clear', true))) return;
+    try { await deleteDoc(doc(db, 'config', 'office')); officeDraft = null; toast('Office zone cleared'); renderOffice(); }
+    catch (e) { toast('Could not clear (' + (e.code || e.message) + ')'); }
   });
   $('o-save').addEventListener('click', async () => {
     const o2 = read();
@@ -1001,11 +1095,21 @@ async function loadReport() {
         SLOTS.forEach((x) => { if (p[x.id] && judge(x.id, ms(p[x.id].t), office) === 'late') late++; });
         if (di < T.dateInt() && !p.pmOut) missed++; // never checked out at night
       });
-      return { s, id, days: Object.keys(days).length, minutes, late, missed };
+      const photos = Object.values(days).reduce((n, p) => n + SLOTS.filter((x) => p[x.id] && p[x.id].photo).length, 0);
+      return { s, id, days: Object.keys(days).length, minutes, late, missed, photos };
     }).filter((r) => r.days || !r.s.disabled);
-    $('r-table').innerHTML = `<table class="rep"><thead><tr><th>Employee</th><th>Days</th><th>Duty hours</th><th>Late / early</th><th>No night check-out</th></tr></thead><tbody>
-      ${rows.map((r) => `<tr><td><b>${esc(r.s.name)}</b><br><span class="muted">${esc(r.id.toUpperCase())}</span></td><td>${r.days}</td><td>${T.fmtDur(r.minutes)}</td><td style="color:${r.late ? 'var(--amber)' : 'inherit'}">${r.late}</td><td style="color:${r.missed ? 'var(--red)' : 'inherit'}">${r.missed}</td></tr>`).join('')}
+    $('r-table').innerHTML = `<table class="rep"><thead><tr><th>Employee</th><th>Days</th><th>Duty hours</th><th>Late / early</th><th>No night check-out</th><th>Kiosk photos</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr><td><b>${esc(r.s.name)}</b><br><span class="muted">${esc(r.id.toUpperCase())}</span></td><td>${r.days}</td><td>${T.fmtDur(r.minutes)}</td><td style="color:${r.late ? 'var(--amber)' : 'inherit'}">${r.late}</td><td style="color:${r.missed ? 'var(--red)' : 'inherit'}">${r.missed}</td><td>${r.photos ? `<button class="btn small ghost" data-rph="${esc(r.id)}">Photos (${r.photos})</button>` : ''}</td></tr>`).join('')}
     </tbody></table>`;
+    $('r-table').querySelectorAll('[data-rph]').forEach((btn) => btn.addEventListener('click', () => {
+      const emp = btn.dataset.rph, s = staff.find((x) => x.id === emp) || { name: emp };
+      const items = [];
+      Object.keys(per[emp] || {}).map(Number).sort((a2, b2) => b2 - a2).forEach((di) => {
+        const p = per[emp][di];
+        SLOTS.forEach((x) => { if (p[x.id] && p[x.id].photo) items.push({ label: `${T.dowShort(di)} ${di % 100} · ${x.label}`, pid: `${emp}_${di}_${x.id}`, t: p[x.id].t, face: p[x.id].face }); });
+      });
+      showPhotoList(`${s.name} — ${T.monthName(m)}`, items);
+    }));
   } catch (e) { $('r-table').innerHTML = `<div class="empty">Could not load (${esc(e.code || e.message)})</div>`; }
 }
 const csvCell = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };

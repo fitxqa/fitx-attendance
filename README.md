@@ -25,6 +25,7 @@ This is a **completely separate project** from FitX Call: its own Firebase proje
 - **Monthly report**: days, hours, late and missed check-outs per employee, and **Export Excel** (CSV, opens in Excel).
 - **Payroll**: monthly salary per employee; overtime beyond 12 duty hours (× 1.25), late deduction (per late minute at the hourly rate, or a fixed amount), QR 100 per absent work day, excused days, bonus / other deductions, **Export Excel**. Salaries are visible to admins only.
 - **Office kiosk**: a shared tablet in the office. *Employees → + Add kiosk* creates its login; give each employee a 4-digit *Kiosk PIN*. On the tablet, technicians tap their name, type their PIN, the front camera takes a photo and the next punch is saved. Admins see the photos on *Today → Photos*. PINs are stored only as hashes.
+- **Kiosk face scan (Face + PIN)**: after the right PIN the tablet scans the face (on-device, offline) and compares it with the employee's registered face. The first kiosk punch with the right PIN registers the face; admins can re-register or reset it (*Employees → Face*). Right PIN + wrong face = no punch, and a *Face did not match* alert with the photo appears under *Requests*. Kiosk photos for any day: *Monthly report → Photos*. Admins can delete a kiosk login and clear the office zone.
 
 ## How cheating is blocked
 Every punch is re-checked by the database rules (`firestore.rules`), not just by the app:

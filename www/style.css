@@ -218,3 +218,4 @@ input[type=range] { width: 100%; accent-color: var(--orange); height: 28px; }
 .k-done { position: absolute; inset: 0; background: #0b0b0b; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; text-align: center; }
 .k-done img { width: 240px; max-width: 70vw; border-radius: 20px; border: 3px solid var(--orange); }
 .k-tick { width: 64px; height: 64px; border-radius: 50%; background: var(--green); display: flex; align-items: center; justify-content: center; margin-top: -40px; }
+.k-oval { position: absolute; left: 50%; top: 50%; width: 46%; height: 72%; transform: translate(-50%, -50%); border: 3px dashed rgba(255, 107, 0, .8); border-radius: 50%; pointer-events: none; }

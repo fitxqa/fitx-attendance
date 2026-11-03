@@ -54,7 +54,8 @@ service cloud.firestore {
     }
     match /config/office {
       allow read: if active();
-      allow write: if isAdmin()
+      allow delete: if isAdmin();
+      allow create, update: if isAdmin()
         && request.resource.data.lat is number && request.resource.data.lng is number
         && request.resource.data.k is number
         && request.resource.data.radius is number && request.resource.data.radius >= 20 && request.resource.data.radius <= 1000;
@@ -66,6 +67,23 @@ service cloud.firestore {
       allow read: if isAdmin() || isKiosk();
       allow write: if isAdmin();
     }
+    // Registered faces (128-number face descriptors, no photo needed to match). The kiosk may
+    // register a face only once (after the right PIN); admins can register again or reset.
+    match /faces/{emp} {
+      allow read: if isAdmin() || isKiosk();
+      allow write: if isAdmin();
+      allow create: if isKiosk() && request.resource.data.by == myEmp()
+        && request.resource.data.descs is list && request.resource.data.descs.size() <= 5
+        && request.resource.data.img is string && request.resource.data.img.size() < 400000
+        && exists(staffPath(emp)) && get(staffPath(emp)).data.role != 'kiosk';
+    }
+    // Face-mismatch alerts from the kiosk (right PIN, wrong face) with the photo taken.
+    match /alerts/{id} {
+      allow read, delete: if isAdmin();
+      allow create: if isKiosk() && request.resource.data.by == myEmp() && request.resource.data.t == request.time
+        && request.resource.data.img is string && request.resource.data.img.size() < 400000;
+    }
+
     // Photo taken by the kiosk at each punch (small JPEG, id = punch id). Admins view them.
     match /photos/{pid} {
       allow read, delete: if isAdmin();
@@ -115,7 +133,7 @@ service cloud.firestore {
         || (active() && emp == myEmp()
             && resource.data.device == null && request.resource.data.device is string
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['device', 'deviceName']));
-      allow delete: if false; // disable instead, so history is kept
+      allow delete: if isAdmin() && resource.data.role == 'kiosk'; // people are disabled instead, so history is kept
     }
 
     // ---------- punches ----------
@@ -125,7 +143,7 @@ service cloud.firestore {
 
       // Punch on the office kiosk tablet (PIN checked on the tablet, photo saved in /photos)
       allow create: if isKiosk()
-        && request.resource.data.keys().hasOnly(['emp', 'name', 'slot', 'date', 'month', 't', 'lat', 'lng', 'acc', 'dist', 'device', 'manual', 'kiosk', 'by', 'photo'])
+        && request.resource.data.keys().hasOnly(['emp', 'name', 'slot', 'date', 'month', 't', 'lat', 'lng', 'acc', 'dist', 'device', 'manual', 'kiosk', 'by', 'photo', 'face'])
         && request.resource.data.kiosk == true && request.resource.data.manual == false
         && request.resource.data.by == myEmp()
         && slotOk(request.resource.data.slot)

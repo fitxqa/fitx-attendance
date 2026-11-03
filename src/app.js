@@ -17,7 +17,7 @@ import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import * as T from './time.js';
 import { PAY_DEFAULT, payFor, round2 } from './payroll.js';
-import { startKiosk, pinHash, loadFaceLib, scanFace } from './kiosk.js';
+import { startKiosk, pinHash, loadFaceLib, scanFace, packDescs } from './kiosk.js';
 import { distance, flatDistance, angle, getFix, mockCheck, startWatch, stopWatch, officeWatch, officeStop, batteryState, openBattery } from './geo.js';
 
 const VERSION = '1.0';
@@ -915,7 +915,7 @@ async function faceAction(emp) {
       if (r.error) { $('rf-msg').textContent = r.error; return; }
       const v = $('rf-video'), c = document.createElement('canvas'); c.width = 360; c.height = Math.round((v.videoHeight / v.videoWidth) * 360);
       c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-      await setDoc(doc(db, 'faces', emp), { descs: r.descs, by: me.id, t: serverTimestamp(), img: c.toDataURL('image/jpeg', 0.6) });
+      await setDoc(doc(db, 'faces', emp), { descs: packDescs(r.descs), by: me.id, t: serverTimestamp(), img: c.toDataURL('image/jpeg', 0.6) });
       toast(`Face registered for ${s.name}`); sh.close();
     } catch (e) { $('rf-msg').textContent = 'Could not register (' + (e.code || e.message) + ')'; }
     finally { $('modal-ok').disabled = false; }

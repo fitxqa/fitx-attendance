@@ -19,6 +19,9 @@ export function loadFaceLib() {
 }
 const sleep = (t) => new Promise((r) => setTimeout(r, t));
 // Scan the video until a clear face is seen. Returns { desc } or { error }.
+// Firestore can't store a list of lists, so each face scan is saved as { v: [128 numbers] }.
+export const packDescs = (descs) => descs.map((v) => ({ v: Array.from(v) }));
+export const unpackDescs = (list) => (list || []).map((x) => (Array.isArray(x) ? x : x && x.v)).filter((v) => Array.isArray(v) && v.length === 128);
 export async function scanFace(video, onMsg, { frames = 1, timeout = 10000 } = {}) {
   const F = await loadFaceLib();
   const got = [];
@@ -92,7 +95,7 @@ export function startKiosk(ctx) {
     render();
   }, (e) => { $('k-grid').innerHTML = `<div class="empty">Cannot load employees (${esc(e.code || e.message)}). Publish the latest rules.</div>`; }));
   unsubs.push(onSnapshot(collection(db, 'pins'), (s) => { pins = {}; s.forEach((d) => { pins[d.id] = d.data().hash; }); render(); }, () => {}));
-  unsubs.push(onSnapshot(collection(db, 'faces'), (s) => { faces = {}; s.forEach((d) => { faces[d.id] = d.data().descs || []; }); }, () => {}));
+  unsubs.push(onSnapshot(collection(db, 'faces'), (s) => { faces = {}; s.forEach((d) => { faces[d.id] = unpackDescs(d.data().descs); }); }, () => {}));
   // Face engine: load in the background so the first scan is quick.
   let faceReady = false;
   loadFaceLib().then(() => { faceReady = true; $('k-face').innerHTML = '<span class="pill green"><i></i>Face scan ready</span>'; })
@@ -247,8 +250,8 @@ export function startKiosk(ctx) {
       }
       faceVal = Math.round(d * 1000) / 1000;
     } else {
-      try { await setDoc(doc(db, 'faces', emp), { descs: scan.descs, by: me.id, t: serverTimestamp(), img: snap() || '' }); faces[emp] = scan.descs; }
-      catch (e) { say('Could not register the face — ask the admin'); pin = ''; dots(); busy = false; return; }
+      try { await setDoc(doc(db, 'faces', emp), { descs: packDescs(scan.descs), by: me.id, t: serverTimestamp(), img: snap() || '' }); faces[emp] = scan.descs; }
+      catch (e) { say('Could not register the face (' + String(e.code || e.message || e).replace('firestore/', '') + ') — ask the admin'); pin = ''; dots(); busy = false; return; }
       faceVal = 'new';
     }
     const photo = snap();

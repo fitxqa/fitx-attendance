@@ -8,7 +8,12 @@ export class Timestamp {
   static fromMillis(ms) { return new Timestamp(ms); }
   toMillis() { return this._ms; }
 }
+function noNestedArrays(v, inArray = false) {
+  if (Array.isArray(v)) { if (inArray) throw { code: 'invalid-argument', message: 'Nested arrays are not supported' }; v.forEach((x) => noNestedArrays(x, true)); }
+  else if (v && typeof v === 'object' && !(v instanceof Timestamp) && v !== SERVER) Object.values(v).forEach((x) => noNestedArrays(x, false));
+}
 const resolve = (data) => {
+  noNestedArrays(data);
   const o = {};
   for (const [k, v] of Object.entries(data)) o[k] = v === SERVER ? new Timestamp(Date.now() + (window.__serverSkew || 0)) : v;
   return o;

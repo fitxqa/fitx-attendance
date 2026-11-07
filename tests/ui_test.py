@@ -114,8 +114,13 @@ with sync_playwright() as p:
     pg.screenshot(path=f'{OUT}/11-live.png', full_page=True)
     check('Rashid Khan' in pg.inner_text('#a-live'), 'live board lists employee')
 
+    # Salary from the Employees list
+    pg.click('[data-sub=staff]'); time.sleep(0.4)
+    pg.click('[data-act=salary][data-id=admin]'); pg.fill('#mf-0', '5000'); pg.click('#modal-ok'); time.sleep(0.6)
+    check(pg.evaluate("window.__store.get('salary/admin').monthly") == 5000, 'salary set from Employees list')
     # Payroll
     pg.click('[data-sub=payroll]'); time.sleep(0.8)
+    check('Ahmed Admin' in pg.inner_text('#py-table'), 'admin appears in payroll')
     check('not set' in pg.inner_text('#py-table'), 'payroll shows salary not set')
     pg.click('[data-pay=fx-014]'); pg.fill('#mf-0', '3120'); pg.fill('#mf-2', '50'); pg.click('#modal-ok'); time.sleep(0.8)
     sal = pg.evaluate("window.__store.get('salary/fx-014')")

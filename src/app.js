@@ -808,7 +808,7 @@ function renderStaff() {
         <div class="nm">${esc(s.name)} ${s.role === 'admin' ? '<span class="pill orange" style="padding:2px 8px">Admin</span>' : ''} ${s.disabled ? '<span class="pill red" style="padding:2px 8px">Disabled</span>' : ''} ${isPerson(s) && pinSet[s.id] ? '<span class="pill green" style="padding:2px 8px">PIN</span>' : ''} ${isPerson(s) && faceSet[s.id] ? '<span class="pill green" style="padding:2px 8px">Face</span>' : ''}</div>
         <div class="rl">ID ${esc(s.id.toUpperCase())}${s.title ? ' · ' + esc(s.title) : ''} · ${s.device ? (isPerson(s) ? 'Phone: ' : 'Tablet: ') + esc(s.deviceName || 'registered') : isPerson(s) ? 'No phone yet' : 'Not signed in on a tablet yet'}</div>
         <div class="actions">
-          ${isPerson(s) ? `<button class="btn small ghost" data-act="pin" data-id="${esc(s.id)}">Kiosk PIN</button><button class="btn small ghost" data-act="face" data-id="${esc(s.id)}">Face</button>` : ''}
+          ${isPerson(s) ? `<button class="btn small ghost" data-act="pin" data-id="${esc(s.id)}">Kiosk PIN</button><button class="btn small ghost" data-act="face" data-id="${esc(s.id)}">Face</button><button class="btn small line" data-act="salary" data-id="${esc(s.id)}">Salary</button>` : ''}
           ${s.id === me.id ? (s.device ? `<button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">Reset my phone</button>` : '') : `
           <button class="btn small ghost" data-act="pass" data-id="${esc(s.id)}">Password</button>
           <button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">${isPerson(s) ? 'Reset phone' : 'Reset tablet'}</button>
@@ -970,6 +970,18 @@ async function staffAction(act, id) {
       b.update(doc(db, 'staff', id), { uid });
       await b.commit();
       toast(`Password changed for ${s.name}`);
+    } else if (act === 'salary') {
+      const cur = await getDoc(doc(db, 'salary', id)).catch(() => null);
+      const old = cur && cur.exists() ? cur.data().monthly : '';
+      const v = await ask({ title: `Salary — ${s.name}`, text: 'Monthly salary in QR. Overtime, late and absence are worked out from this in Admin → Payroll.',
+        fields: [{ label: 'Monthly salary (QR)', type: 'number', value: old }], ok: 'Save' });
+      if (!v) return;
+      const sal = round2(v[0]);
+      if (!(sal > 0)) return toast('Enter a salary above 0');
+      await setDoc(doc(db, 'salary', id), { monthly: sal, by: me.id, updated: serverTimestamp() });
+      salaries[id] = sal;
+      toast(`Salary saved for ${s.name}: QR ${sal}`);
+      if ($('py-month')) loadPayroll();
     } else if (act === 'face') {
       await faceAction(id);
     } else if (act === 'delkiosk') {
@@ -1194,7 +1206,7 @@ async function loadPayroll() {
       const r = payFor({ month: m, days: per[id] || {}, salary: salaries[id] || 0, adj: payAdj[id] || {}, settings: paySettings,
         office, today: T.dateInt(), since: created ? T.dateInt(created) : 0 });
       return { id, s, r, days: per[id] || {} };
-    }).filter((x) => isPerson(x.s) && (salaries[x.id] || (x.s.role !== 'admin' && (!x.s.disabled || x.r.worked))));
+    }).filter((x) => isPerson(x.s) && (salaries[x.id] || !x.s.disabled || x.r.worked));
     renderPayroll(m);
   } catch (e) { $('py-table').innerHTML = `<div class="empty">Could not load payroll (${esc(e.code || e.message)})${String(e.code || '').includes('permission') ? '<br>Publish the latest firestore.rules in Firebase.' : ''}</div>`; }
 }
@@ -1254,7 +1266,7 @@ async function editPay(emp, m) {
     b.set(doc(db, 'payadj', `${m}_${emp}`), { emp, month: m, excused: Math.max(0, Math.round(Number(v[1]) || 0)),
       bonus: Math.max(0, round2(v[2])), deduct: Math.max(0, round2(v[3])), note: String(v[4] || '').slice(0, 200), by: me.id, updated: serverTimestamp() });
     await b.commit();
-    toast('Saved'); loadPayroll();
+    toast('Saved'); if ($('py-month')) loadPayroll();
   } catch (e) { toast('Could not save (' + (e.code || e.message) + ')', 3500); }
 }
 

@@ -140,7 +140,7 @@ h2.sec { margin: 0; font-size: 15px; font-weight: 700; }
 .empty { text-align: center; color: var(--muted); padding: 30px 20px; font-size: 14px; }
 
 /* ---------- Admin ---------- */
-.subtabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px 20px 12px; scrollbar-width: none; }
+.subtabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 20px 12px; }
 .subtabs::-webkit-scrollbar { display: none; }
 .subtabs button { flex: none; height: 40px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--line2); background: var(--panel); color: #c4c4c4; font-size: 13px; font-weight: 600; }
 .subtabs button.on { background: var(--orange-bg); border-color: var(--orange); color: var(--orange2); }

@@ -142,7 +142,8 @@ let today = {};           // my punches today, by slot
 let todayDate = T.dateInt();
 let fix = null;           // latest GPS fix
 let fixErr = null;
-let fixSeen = 0;          // when that fix arrived (phone clock)
+let fixSeen = 0;
+let myGrant = null;       // { date, until } when the admin allows fixing a past day          // when that fix arrived (phone clock)
 let busy = false;
 let tab = 'punch';
 let unsubs = [];
@@ -344,6 +345,11 @@ function startApp() {
     if (wasAdmin !== isAdmin()) { $('tab-admin').classList.toggle('hidden', !isAdmin()); if (isAdmin()) startAdmin(); }
     renderProfile(); renderPunch();
   }));
+  // Admin permission to fix a previous day
+  unsubs.push(onSnapshot(doc(db, 'grants', me.id), (s) => {
+    myGrant = s.exists() && ms(s.data().until) > T.now() ? s.data() : null;
+    renderGrant();
+  }, () => { myGrant = null; renderGrant(); }));
   // Office zone + shift times
   unsubs.push(onSnapshot(doc(db, 'config', 'office'), (s) => {
     officeSet = s.exists() && typeof s.data().lat === 'number';
@@ -567,6 +573,57 @@ $('exc-btn').addEventListener('click', async () => {
   } catch (e) { toast('Could not send the request'); }
 });
 
+// ---------- Fix a previous day (only when the admin allows it) ----------
+function renderGrant() {
+  const g = myGrant;
+  const label = g ? `${T.dowShort(g.date)} ${g.date % 100} ${T.monthName(Math.floor(g.date / 100)).split(' ')[0]}` : '';
+  $('grant-go').classList.toggle('hidden', !g);
+  if (g) $('grant-go').textContent = `Admin allowed you to fix ${label} — tap to fix`;
+  if (!g) { $('h-grant').innerHTML = ''; return; }
+  $('h-grant').innerHTML = `<div class="card pad mx formcard" style="margin-bottom:12px;border-color:var(--orange)">
+    <h2 class="sec" style="color:var(--orange2)">Fix ${esc(label)}</h2>
+    <div class="muted" style="font-size:13px;line-height:1.5">The admin allowed you to correct this day until ${T.hhmm(ms(g.until))} ${T.dowShort(T.dateInt(ms(g.until)))}. Fill in the missing times and save. You can do this once.</div>
+    <div class="row2">${SLOTS.map((x) => `<label class="field">${esc(x.label)}<input type="time" id="gf-${x.id}"></label>`).join('')}</div>
+    <label class="field">Reason (what happened)<input id="gf-note" placeholder="e.g. forgot to punch back in"></label>
+    <div class="err" id="gf-err"></div>
+    <button class="btn block" id="gf-save" type="button">Save corrections</button></div>`;
+  // fill in what is already recorded for that day
+  getDocs(query(collection(db, 'punches'), where('emp', '==', me.id), where('date', '==', g.date))).then((snap) => {
+    snap.forEach((d) => { const p = d.data(); const el = $('gf-' + p.slot); if (el && !el.value) { el.value = T.hhmm(ms(p.t)); el.dataset.orig = el.value; } });
+  }).catch(() => {});
+  $('gf-save').onclick = saveGrantFix;
+}
+$('grant-go').addEventListener('click', () => setTab('history'));
+
+async function saveGrantFix() {
+  const g = myGrant; if (!g) return;
+  const err = (t) => { $('gf-err').textContent = t; };
+  const note = $('gf-note').value.trim();
+  if (!note) return err('Please write the reason');
+  const vals = SLOTS.map((x) => ({ x, v: $('gf-' + x.id).value, orig: $('gf-' + x.id).dataset.orig || '' }));
+  // times must be in order on the work-day clock (after midnight = later)
+  const filled = vals.filter((o) => o.v);
+  for (let i = 1; i < filled.length; i++) {
+    if (T.schedMin(filled[i].v) <= T.schedMin(filled[i - 1].v)) return err(`“${filled[i].x.label}” must be after “${filled[i - 1].x.label}”`);
+  }
+  const changed = vals.filter((o) => o.v && o.v !== o.orig);
+  if (!changed.length) return err('Nothing changed');
+  $('gf-save').disabled = true;
+  try {
+    const b = writeBatch(db);
+    changed.forEach(({ x, v }) => {
+      b.set(doc(db, 'punches', punchId(me.id, g.date, x.id)), {
+        emp: me.id, name: me.name, slot: x.id, date: g.date, month: Math.floor(g.date / 100), t: Timestamp.fromMillis(T.qaToMs(g.date, v)),
+        lat: null, lng: null, acc: null, dist: null, device: null, manual: true, self: true, by: me.id, note: note.slice(0, 200),
+      });
+    });
+    b.delete(doc(db, 'grants', me.id)); // one-time permission
+    await b.commit();
+    toast('Corrections saved ✓');
+    loadHistory();
+  } catch (e) { err('Could not save (' + (e.code || e.message) + ')'); $('gf-save').disabled = false; }
+}
+
 // ---------- History ----------
 (function fillMonths() {
   let m = T.monthInt(); const opts = [];
@@ -647,6 +704,7 @@ let adminSub = 'live';
 let adminUnsubs = [];
 let pinSet = {};         // emp -> has a kiosk PIN
 let faceSet = {};        // emp -> has a registered face
+let grantSet = {};       // emp -> { date, until } permission to fix a past day
 let alerts = [];         // face-mismatch alerts from the kiosk
 const isPerson = (s) => s.role !== 'kiosk';
 function startAdmin() {
@@ -661,6 +719,7 @@ function startAdmin() {
     renderAdmin();
   }, () => {}));
   adminUnsubs.push(onSnapshot(collection(db, 'pins'), (s) => { pinSet = {}; s.forEach((d) => { pinSet[d.id] = true; }); renderAdmin(); }, () => {}));
+  adminUnsubs.push(onSnapshot(collection(db, 'grants'), (s) => { grantSet = {}; s.forEach((d) => { if (ms(d.data().until) > T.now()) grantSet[d.id] = d.data(); }); renderAdmin(); }, () => {}));
   adminUnsubs.push(onSnapshot(collection(db, 'faces'), (s) => { faceSet = {}; s.forEach((d) => { faceSet[d.id] = true; }); renderAdmin(); }, () => {}));
   adminUnsubs.push(onSnapshot(collection(db, 'alerts'), (s) => {
     alerts = []; s.forEach((d) => alerts.push({ aid: d.id, ...d.data() }));
@@ -725,31 +784,86 @@ function renderLive() {
         return `<div class="item" style="align-items:flex-start">
           <div class="av">${esc(initials(s.name))}</div>
           <div class="who"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div class="nm">${esc(s.name)}</div><span class="pill ${col}"><i></i>${st}</span></div>
-            <div class="rl">${esc(s.title || '')}${last && (last.dist != null || last.kiosk) ? ` · ${last.manual ? 'added by admin' : last.kiosk ? 'office kiosk' : last.auto ? `left the office at ${T.hhmm(ms(last.t))} (auto-detected)` : last.dist + ' m from office'}` : ''}</div>
+            <div class="rl">${esc(s.title || '')}${last && (last.dist != null || last.kiosk) ? ` · ${last.manual ? (last.self ? 'fixed by employee' : 'added by admin') : last.kiosk ? 'office kiosk' : last.auto ? `left the office at ${T.hhmm(ms(last.t))} (auto-detected)` : last.dist + ' m from office'}` : ''}</div>
             <div class="times">${SLOTS.map((x) => { const q = p[x.id]; return `<div><small>${x.short}</small><span class="tm ${q ? judge(x.id, ms(q.t), office) : ''} ${q && q.auto ? 'auto' : ''}">${q ? T.hhmm(ms(q.t)) + (q.manual ? '*' : '') : '--'}</span></div>`; }).join('')}</div>
-            <div class="actions"><button class="btn small ghost" data-fix="${esc(s.id)}">Fix punch</button>${last && last.lat != null ? mapLink(last.lat, last.lng) : ''}${SLOTS.some((x) => p[x.id] && p[x.id].photo) ? `<button class="btn small ghost" data-photos="${esc(s.id)}">Photos</button>` : ''}</div>
+            <div class="actions"><button class="btn small line" data-hist="${esc(s.id)}">Punches</button><button class="btn small ghost" data-fix="${esc(s.id)}">Fix punch</button>${last && last.lat != null ? mapLink(last.lat, last.lng) : ''}${SLOTS.some((x) => p[x.id] && p[x.id].photo) ? `<button class="btn small ghost" data-photos="${esc(s.id)}">Photos</button>` : ''}</div>
           </div></div>`;
       }).join('') || '<div class="empty">No employees yet — add them in Employees</div>'}</div>
     </div>`;
   $('a-live').querySelectorAll('[data-fix]').forEach((b) => b.addEventListener('click', () => fixPunch(b.dataset.fix)));
+  $('a-live').querySelectorAll('[data-hist]').forEach((b) => b.addEventListener('click', () => showEmpHistory(b.dataset.hist, T.monthInt())));
   $('a-live').querySelectorAll('[data-photos]').forEach((b) => b.addEventListener('click', () => showPhotos(b.dataset.photos, todayDate, todayAll[b.dataset.photos] || {})));
 }
 async function fixPunch(emp) {
   const s = staff.find((x) => x.id === emp); if (!s) return;
-  const v = await ask({ title: `Fix punch — ${s.name}`, text: 'Adds or changes today\'s punch (marked as added by admin). Leave the time empty to delete it.',
-    fields: [{ label: 'Punch', type: 'select', value: 'amIn', options: SLOTS.map((x) => [x.id, x.label]) },
-      { label: 'Time (Qatar)', type: 'time', required: false }, { label: 'Note', required: false }], ok: 'Save' });
+  const v = await ask({ title: `Fix punch — ${s.name}`, text: 'Adds or changes a punch on any day (marked as added by admin). Leave the time empty to delete it.',
+    fields: [{ label: 'Date', type: 'date', value: T.isoDate(todayDate) },
+      { label: 'Punch', type: 'select', value: 'amIn', options: SLOTS.map((x) => [x.id, x.label]) },
+      { label: 'Time (Qatar) — after midnight counts for the same work day', type: 'time', required: false }, { label: 'Note', required: false }], ok: 'Save' });
   if (!v) return;
-  const [slot, time, note] = v;
-  const id = punchId(emp, todayDate, slot);
+  const [iso, slot, time, note] = v;
+  const day = Number(String(iso).replace(/-/g, ''));
+  if (!(day > 20000101) || day > todayDate) return toast('Choose today or an earlier date');
+  const id = punchId(emp, day, slot);
   try {
     if (!time) { await deleteDoc(doc(db, 'punches', id)); toast('Punch deleted'); return; }
     await setDoc(doc(db, 'punches', id), {
-      emp, name: s.name, slot, date: todayDate, month: Math.floor(todayDate / 100), t: Timestamp.fromMillis(T.qaToMs(todayDate, time)),
+      emp, name: s.name, slot, date: day, month: Math.floor(day / 100), t: Timestamp.fromMillis(T.qaToMs(day, time)),
       lat: null, lng: null, acc: null, dist: null, device: null, manual: true, by: me.id, note: (note || '').slice(0, 200),
     });
     toast('Punch saved');
   } catch (e) { toast('Could not save (' + (e.code || e.message) + ')'); }
+}
+
+// Admin: one employee's punches for a month, day by day (same view the employee sees in History)
+async function showEmpHistory(emp, month) {
+  const s = staff.find((x) => x.id === emp) || { name: emp };
+  const sh = sheet(`${s.name} — punches`);
+  let m = month; const opts = []; let mm = T.monthInt();
+  for (let i = 0; i < 12; i++) { opts.push(`<option value="${mm}" ${mm === m ? 'selected' : ''}>${T.monthName(mm)}</option>`); mm = T.prevMonth(mm); }
+  const draw = async () => {
+    sh.body.innerHTML = `<select class="month-sel" id="eh-month" aria-label="Month">${opts.join('')}</select><div class="empty">Loading…</div>`;
+    $('eh-month').value = String(m);
+    $('eh-month').onchange = () => { m = Number($('eh-month').value); draw(); };
+    try {
+      const snap = await getDocs(query(collection(db, 'punches'), where('emp', '==', emp), where('month', '==', m)));
+      const rows = []; snap.forEach((d) => rows.push(d.data()));
+      const by = groupByDay(rows);
+      const days = Object.keys(by).map(Number).sort((a, b) => b - a);
+      let minutes = 0, late = 0;
+      days.forEach((di) => { minutes += dayWorked(by[di], di); SLOTS.forEach((x) => { if (by[di][x.id] && judge(x.id, ms(by[di][x.id].t), office) === 'late') late++; }); });
+      const tag = (q) => (q.kiosk ? 'kiosk' : q.self ? 'fixed by employee' : q.manual ? 'by admin' : q.auto ? 'auto' : q.dist != null ? q.dist + ' m' : '');
+      const body = days.map((di) => {
+        const p = by[di];
+        const past = di < T.dateInt();
+        const cells = SLOTS.map((x) => {
+          const q = p[x.id];
+          if (q) return `<div><span class="tm ${judge(x.id, ms(q.t), office)} ${q.manual ? 'man' : ''} ${q.auto ? 'auto' : ''}">${T.hhmm(ms(q.t))}</span><small style="display:block;font-size:9px;color:var(--dim)">${esc(tag(q))}</small></div>`;
+          const missed = past && p.amIn && (x.id === 'pmIn' || x.id === 'pmOut' || (x.id === 'amOut' && !p.pmIn)) || past && x.id === 'pmOut' && p.pmIn;
+          return `<div class="tm ${missed ? 'miss' : ''}">${missed ? 'Missed' : '--'}</div>`;
+        }).join('');
+        const photos = SLOTS.some((x) => p[x.id] && p[x.id].photo);
+        return `<div class="hrow" style="display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center"><div><b class="disp" style="font-size:20px">${di % 100}</b> <span class="muted" style="font-size:12px">${T.dowShort(di)} · on duty ${T.fmtDur(dayWorked(p, di))}</span></div>
+          ${photos ? `<button type="button" class="btn small ghost" data-ehph="${di}" style="height:32px">Photos</button>` : ''}</div>
+          <div class="times" style="margin-top:0">${SLOTS.map((x) => `<div><small>${x.short}</small></div>`).join('')}</div>
+          <div class="times" style="margin-top:-4px">${cells}</div></div>`;
+      }).join('');
+      sh.body.innerHTML = `<select class="month-sel" id="eh-month" aria-label="Month">${opts.join('')}</select>
+        <div class="stats"><div class="stat hot"><div class="v">${Math.round(minutes / 60)}h</div><div class="l">Duty hours</div></div>
+          <div class="stat"><div class="v">${days.length}</div><div class="l">Days present</div></div>
+          <div class="stat"><div class="v" style="color:var(--amber)">${late}</div><div class="l">Late / early</div></div></div>
+        <div style="display:flex;flex-direction:column;gap:6px">${body || '<div class="empty">No punches this month</div>'}</div>
+        <div class="legend" style="padding:0"><span><i style="background:var(--green)"></i>On time</span><span><i style="background:var(--amber)"></i>Late / early</span><span><i style="background:var(--red)"></i>Missed</span></div>`;
+      $('eh-month').value = String(m);
+      $('eh-month').onchange = () => { m = Number($('eh-month').value); draw(); };
+      sh.body.querySelectorAll('[data-ehph]').forEach((b) => b.addEventListener('click', () => {
+        const di = Number(b.dataset.ehph); const p = by[di];
+        showPhotoList(`${s.name} — ${T.dowShort(di)} ${di % 100}`, SLOTS.filter((x) => p[x.id] && p[x.id].photo).map((x) => ({ label: x.label, pid: `${emp}_${di}_${x.id}`, t: p[x.id].t, face: p[x.id].face })));
+      }));
+    } catch (e) { sh.body.innerHTML = `<div class="empty">Could not load (${esc(e.code || e.message)})</div>`; }
+  };
+  draw();
 }
 
 // ----- Requests -----
@@ -805,10 +919,10 @@ function renderStaff() {
   const people = staff.filter(isPerson), kiosks = staff.filter((s) => !isPerson(s));
   const row = (s) => `
       <div class="item" style="align-items:flex-start;${s.disabled ? 'opacity:.55' : ''}"><div class="av">${esc(initials(s.name))}</div><div class="who">
-        <div class="nm">${esc(s.name)} ${s.role === 'admin' ? '<span class="pill orange" style="padding:2px 8px">Admin</span>' : ''} ${s.disabled ? '<span class="pill red" style="padding:2px 8px">Disabled</span>' : ''} ${isPerson(s) && pinSet[s.id] ? '<span class="pill green" style="padding:2px 8px">PIN</span>' : ''} ${isPerson(s) && faceSet[s.id] ? '<span class="pill green" style="padding:2px 8px">Face</span>' : ''}</div>
+        <div class="nm">${esc(s.name)} ${s.role === 'admin' ? '<span class="pill orange" style="padding:2px 8px">Admin</span>' : ''} ${s.disabled ? '<span class="pill red" style="padding:2px 8px">Disabled</span>' : ''} ${isPerson(s) && pinSet[s.id] ? '<span class="pill green" style="padding:2px 8px">PIN</span>' : ''} ${isPerson(s) && faceSet[s.id] ? '<span class="pill green" style="padding:2px 8px">Face</span>' : ''} ${grantSet[s.id] ? `<span class="pill orange" style="padding:2px 8px">Can fix ${T.dowShort(grantSet[s.id].date)} ${grantSet[s.id].date % 100}</span>` : ''}</div>
         <div class="rl">ID ${esc(s.id.toUpperCase())}${s.title ? ' · ' + esc(s.title) : ''} · ${s.device ? (isPerson(s) ? 'Phone: ' : 'Tablet: ') + esc(s.deviceName || 'registered') : isPerson(s) ? 'No phone yet' : 'Not signed in on a tablet yet'}</div>
         <div class="actions">
-          ${isPerson(s) ? `<button class="btn small ghost" data-act="pin" data-id="${esc(s.id)}">Kiosk PIN</button><button class="btn small ghost" data-act="face" data-id="${esc(s.id)}">Face</button><button class="btn small line" data-act="salary" data-id="${esc(s.id)}">Salary</button>` : ''}
+          ${isPerson(s) ? `<button class="btn small ghost" data-act="pin" data-id="${esc(s.id)}">Kiosk PIN</button><button class="btn small ghost" data-act="face" data-id="${esc(s.id)}">Face</button><button class="btn small line" data-act="salary" data-id="${esc(s.id)}">Salary</button><button class="btn small ghost" data-act="grant" data-id="${esc(s.id)}">${grantSet[s.id] ? 'Cancel edit' : 'Allow edit'}</button>` : ''}
           ${s.id === me.id ? (s.device ? `<button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">Reset my phone</button>` : '') : `
           <button class="btn small ghost" data-act="pass" data-id="${esc(s.id)}">Password</button>
           <button class="btn small ghost" data-act="phone" data-id="${esc(s.id)}">${isPerson(s) ? 'Reset phone' : 'Reset tablet'}</button>
@@ -970,6 +1084,19 @@ async function staffAction(act, id) {
       b.update(doc(db, 'staff', id), { uid });
       await b.commit();
       toast(`Password changed for ${s.name}`);
+    } else if (act === 'grant') {
+      if (grantSet[id]) {
+        if (!(await confirmBox('Cancel permission?', `${s.name} will no longer be able to fix that day.`, 'Cancel permission', true))) return;
+        await deleteDoc(doc(db, 'grants', id)); toast('Permission cancelled'); return;
+      }
+      const yest = T.dateInt(T.now() - 86400000);
+      const v = await ask({ title: `Allow ${s.name} to fix a day`, text: 'They can enter missing punch times for this day once, within 48 hours. Their corrections show as “fixed by employee”.',
+        fields: [{ label: 'Day to fix', type: 'date', value: T.isoDate(yest) }], ok: 'Allow' });
+      if (!v) return;
+      const day = Number(String(v[0]).replace(/-/g, ''));
+      if (!(day > 20000101) || day >= todayDate) return toast('Choose a day before today', 3000);
+      await setDoc(doc(db, 'grants', id), { date: day, until: Timestamp.fromMillis(T.now() + 48 * 3600000), by: me.id });
+      toast(`${s.name} can fix ${T.dowShort(day)} ${day % 100} for 48 hours`, 3500);
     } else if (act === 'salary') {
       const cur = await getDoc(doc(db, 'salary', id)).catch(() => null);
       const old = cur && cur.exists() ? cur.data().monthly : '';
@@ -1111,8 +1238,9 @@ async function loadReport() {
       return { s, id, days: Object.keys(days).length, minutes, late, missed, photos };
     }).filter((r) => r.days || !r.s.disabled);
     $('r-table').innerHTML = `<table class="rep"><thead><tr><th>Employee</th><th>Days</th><th>Duty hours</th><th>Late / early</th><th>No night check-out</th><th>Kiosk photos</th></tr></thead><tbody>
-      ${rows.map((r) => `<tr><td><b>${esc(r.s.name)}</b><br><span class="muted">${esc(r.id.toUpperCase())}</span></td><td>${r.days}</td><td>${T.fmtDur(r.minutes)}</td><td style="color:${r.late ? 'var(--amber)' : 'inherit'}">${r.late}</td><td style="color:${r.missed ? 'var(--red)' : 'inherit'}">${r.missed}</td><td>${r.photos ? `<button class="btn small ghost" data-rph="${esc(r.id)}">Photos (${r.photos})</button>` : ''}</td></tr>`).join('')}
+      ${rows.map((r) => `<tr><td><button class="link" style="padding:0;min-height:0;text-align:left;font-size:13px" data-rhist="${esc(r.id)}"><b>${esc(r.s.name)}</b></button><br><span class="muted">${esc(r.id.toUpperCase())} · tap name for punches</span></td><td>${r.days}</td><td>${T.fmtDur(r.minutes)}</td><td style="color:${r.late ? 'var(--amber)' : 'inherit'}">${r.late}</td><td style="color:${r.missed ? 'var(--red)' : 'inherit'}">${r.missed}</td><td>${r.photos ? `<button class="btn small ghost" data-rph="${esc(r.id)}">Photos (${r.photos})</button>` : ''}</td></tr>`).join('')}
     </tbody></table>`;
+    $('r-table').querySelectorAll('[data-rhist]').forEach((btn) => btn.addEventListener('click', () => showEmpHistory(btn.dataset.rhist, m)));
     $('r-table').querySelectorAll('[data-rph]').forEach((btn) => btn.addEventListener('click', () => {
       const emp = btn.dataset.rph, s = staff.find((x) => x.id === emp) || { name: emp };
       const items = [];
@@ -1129,7 +1257,7 @@ async function exportReport() {
   const m = Number($('r-month').value);
   const per = {};
   reportRows.forEach((p) => { ((per[p.emp] = per[p.emp] || {})[p.date] = per[p.emp][p.date] || {})[p.slot] = p; });
-  const lines = [['Date', 'Day', 'Employee ID', 'Name', 'Morning check-in', 'Leave for visits', 'Back from visits', 'Night check-out', 'Duty hours', 'Late / early', 'Added by admin', 'Auto-detected leave', 'Office kiosk'].join(',')];
+  const lines = [['Date', 'Day', 'Employee ID', 'Name', 'Morning check-in', 'Leave for visits', 'Back from visits', 'Night check-out', 'Duty hours', 'Late / early', 'Added manually', 'Auto-detected leave', 'Office kiosk'].join(',')];
   Object.keys(per).sort().forEach((emp) => {
     const s = staff.find((x) => x.id === emp) || { name: emp };
     Object.keys(per[emp]).map(Number).sort((a, b) => a - b).forEach((di) => {

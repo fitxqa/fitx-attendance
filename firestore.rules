@@ -44,6 +44,21 @@ service cloud.firestore {
            : punchExists(d.emp, d.date, 'pmIn');
     }
     function slotOk(s) { return s in ['amIn', 'amOut', 'pmIn', 'pmOut']; }
+    // Admin permission for an employee to fix one past day (grants/{employeeId})
+    function grantPath(e) { return /databases/$(database)/documents/grants/$(e); }
+    function grantOk(d) {
+      return exists(grantPath(myEmp())) && get(grantPath(myEmp())).data.date == d.date
+        && request.time < get(grantPath(myEmp())).data.until && d.date < qdate();
+    }
+    // Work day d (yyyymmdd) runs 04:00 → 04:00 Qatar time = 01:00 UTC → 01:00 UTC next day
+    function dayStart(d) { return timestamp.date(int(d / 10000), int(d / 100) % 100, d % 100) + duration.value(1, 'h'); }
+    function selfFixOk(d, pid) {
+      return active() && d.emp == myEmp() && grantOk(d)
+        && d.keys().hasOnly(['emp', 'name', 'slot', 'date', 'month', 't', 'lat', 'lng', 'acc', 'dist', 'device', 'manual', 'self', 'by', 'note'])
+        && d.manual == true && d.self == true && d.by == myEmp() && slotOk(d.slot) && d.month is int
+        && pid == myEmp() + '_' + string(d.date) + '_' + d.slot
+        && d.t is timestamp && d.t >= dayStart(d.date) && d.t < dayStart(d.date) + duration.value(24, 'h');
+    }
 
     // ---------- setup & settings ----------
     match /config/setup {
@@ -95,6 +110,13 @@ service cloud.firestore {
         && existsAfter(/databases/$(database)/documents/punches/$(pid))
         && getAfter(/databases/$(database)/documents/punches/$(pid)).data.kiosk == true
         && getAfter(/databases/$(database)/documents/punches/$(pid)).data.emp == request.resource.data.emp;
+    }
+
+    // ---------- permission to fix a past day ----------
+    match /grants/{emp} {
+      allow get: if isAdmin() || (active() && myEmp() == emp);
+      allow list, create, update: if isAdmin();
+      allow delete: if isAdmin() || (active() && myEmp() == emp);
     }
 
     // ---------- payroll (admin only: employees can't see salaries) ----------
@@ -186,6 +208,10 @@ service cloud.firestore {
         && request.resource.data.t > request.time - duration.value(60, 'm')
         && request.resource.data.device == meDoc().device
         && orderOk(request.resource.data);
+
+      // Employee fixing a past day the admin allowed (grants/{employeeId})
+      allow create: if selfFixOk(request.resource.data, pid);
+      allow update: if selfFixOk(request.resource.data, pid) && resource.data.emp == myEmp();
 
       // Admin corrections / approved exception requests
       allow create, update: if isAdmin()

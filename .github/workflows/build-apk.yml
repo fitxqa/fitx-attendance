@@ -49,6 +49,15 @@ jobs:
       - name: Build web app
         run: npm run build
 
+      - name: Publish web version (https://fitxqa.github.io/fitx-attendance)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./www
+          publish_branch: gh-pages
+          force_orphan: true
+          commit_message: Web app ${{ github.run_number }}
+
       - name: Sync Capacitor
         run: npx cap sync android
 

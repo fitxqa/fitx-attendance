@@ -1473,3 +1473,21 @@ if (native) {
     if (document.hidden) stopWatch(); else if (tab === 'punch') beginWatch();
   });
 }
+
+// ---------- Web version: install as an app (PWA) ----------
+if (!native) {
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  let deferred = null;
+  const showInstall = (on) => document.querySelectorAll('.install-btn').forEach((b) => b.classList.toggle('hidden', !on));
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferred = e; showInstall(true); });
+  window.addEventListener('appinstalled', () => { deferred = null; showInstall(false); toast('FitX Attendance installed ✓'); });
+  document.querySelectorAll('.install-btn').forEach((b) => b.addEventListener('click', async () => {
+    if (!deferred) return;
+    deferred.prompt();
+    try { await deferred.userChoice; } catch (e) {}
+    deferred = null; showInstall(false);
+  }));
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (ios && !standalone) document.querySelectorAll('.ios-hint').forEach((d) => d.classList.remove('hidden'));
+}
